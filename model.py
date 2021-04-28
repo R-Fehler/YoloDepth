@@ -13,7 +13,7 @@ List is structured by "B" indicating a residual block followed by the number of 
 "S" is for scale prediction block and computing the yolo loss
 "U" is for upsampling the feature map and concatenating with a previous layer
 """
-config = [
+arch_config = [
     (32, 3, 1),
     (64, 3, 2),
     ["B", 1],
@@ -130,7 +130,7 @@ class YOLOv3(nn.Module):
         layers = nn.ModuleList()
         in_channels = self.in_channels
 
-        for module in config:
+        for module in arch_config:
             if isinstance(module, tuple):
                 out_channels, kernel_size, stride = module
                 layers.append(
@@ -174,3 +174,4 @@ if __name__ == "__main__":
     assert model(x)[1].shape == (2, 3, IMAGE_SIZE//16, IMAGE_SIZE//16, num_classes + 5)
     assert model(x)[2].shape == (2, 3, IMAGE_SIZE//8, IMAGE_SIZE//8, num_classes + 5)
     print("Success!")
+
