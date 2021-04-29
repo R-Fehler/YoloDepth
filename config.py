@@ -7,10 +7,10 @@ from utils import seed_everything
 
 DATASET = 'PASCAL_VOC'
 # DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
-DEVICE = "cuda:0"
+DEVICE = "cuda:2"
 # seed_everything()  # If you want deterministic behavior
 NUM_WORKERS = 4
-BATCH_SIZE = 32
+BATCH_SIZE = 1
 IMAGE_SIZE = 416
 NUM_CLASSES = 20
 LEARNING_RATE = 5e-6

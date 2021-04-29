@@ -5,6 +5,7 @@ Main file for training Yolo model on Pascal VOC and COCO dataset
 import config
 import torch
 import torch.optim as optim
+from torch.utils.tensorboard import SummaryWriter
 
 from model import YOLOv3
 from tqdm import tqdm
@@ -78,6 +79,12 @@ def main():
         * torch.tensor(config.S).unsqueeze(1).unsqueeze(1).repeat(1, 3, 2)
     ).to(config.DEVICE)
 
+    writer = SummaryWriter("myRun")
+    images, labels = next(iter(train_loader))
+    images = images.to(config.DEVICE)
+    writer.add_scalar('test/scalar',20,10)
+    writer.add_graph(torch.jit.trace(model, images, strict=False), [])
+    writer.close
     for epoch in range(config.NUM_EPOCHS):
         plot_couple_examples(model, test_loader, 0.3, 0.3, scaled_anchors,epochNo=epoch)
         train_fn(train_loader, model, optimizer, loss_fn, scaler, scaled_anchors)
