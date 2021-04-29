@@ -56,6 +56,7 @@ class CNNBlock(nn.Module):
             return self.conv(x)
 
 
+# this is missing either a concat or a conv layer?? check residual arch
 class ResidualBlock(nn.Module):
     def __init__(self, channels, use_residual=True, num_repeats=1):
         super().__init__()
