@@ -5,24 +5,24 @@ import torch
 from albumentations.pytorch import ToTensorV2
 from utils import seed_everything
 
-DATASET = 'PASCAL_VOC'
+DATASET = 'DepthDataset'
 # DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
 DEVICE = "cuda:2"
 # seed_everything()  # If you want deterministic behavior
 NUM_WORKERS = 4
-BATCH_SIZE = 1
+BATCH_SIZE = 32
 IMAGE_SIZE = 416
 NUM_CLASSES = 20
-LEARNING_RATE = 5e-6
+LEARNING_RATE = 1e-4
 WEIGHT_DECAY = 1e-4
-NUM_EPOCHS = 300
+NUM_EPOCHS = 2000
 CONF_THRESHOLD = 0.1
 MAP_IOU_THRESH = 0.5
 NMS_IOU_THRESH = 0.45
 S = [IMAGE_SIZE // 32, IMAGE_SIZE // 16, IMAGE_SIZE // 8]
 PIN_MEMORY = True
-LOAD_MODEL = True
-SAVE_MODEL = True
+LOAD_MODEL = False
+SAVE_MODEL = False
 CHECKPOINT_FILE = "checkpoint.pth.tar"
 IMG_DIR = DATASET + "/images/"
 LABEL_DIR = DATASET + "/labels/"

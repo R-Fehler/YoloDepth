@@ -3,9 +3,14 @@ Implementation of Yolo Loss Function similar to the one in Yolov3 paper,
 the difference from what I can tell is I use CrossEntropy for the classes
 instead of BinaryCrossEntropy.
 """
+from torch._C import dtype
+from model import YOLOv3
+from dataset import DepthDataset
 import random
 import torch
 import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
+import config
 
 from utils import intersection_over_union
 
@@ -77,3 +82,83 @@ class YoloLoss(nn.Module):
             + self.lambda_noobj * no_object_loss
             + self.lambda_class * class_loss
         )
+
+class SILogLoss(nn.Module):  # Main loss function used in AdaBins paper
+    def __init__(self):
+        super(SILogLoss, self).__init__()
+        self.name = 'SILog'
+
+    def forward(self, input, target, mask=None, interpolate=True):
+        if interpolate:
+            input = nn.functional.interpolate(input, target.shape[-2:], mode='bilinear', align_corners=True)
+
+        if mask is not None:
+            input = input[mask]
+            target = target[mask]
+        g = torch.log(input) - torch.log(target)
+        # n, c, h, w = g.shape
+        # norm = 1/(h*w)
+        # Dg = norm * torch.sum(g**2) - (0.85/(norm**2)) * (torch.sum(g))**2
+
+        Dg = torch.var(g) + 0.15 * torch.pow(torch.mean(g), 2)
+        return 10 * torch.sqrt(Dg)
+
+class DepthLoss(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+
+    def forward(self,input, target):
+        assert input.shape==target.shape ,"loss shapes not fitting"
+        input = input.clamp(1.,255.)
+        target = target.clamp(1.,255.)
+        g = torch.log(input) - torch.log(target)
+        Dg = torch.var(g) + 0.15 * torch.pow(torch.mean(g),2)
+        return 10 * torch.sqrt(Dg)
+
+
+
+
+class SILogLoss(nn.Module):  # Main loss function used in AdaBins paper
+    def __init__(self):
+        super(SILogLoss, self).__init__()
+        self.name = 'SILog'
+
+    def forward(self, input, target, mask=None, interpolate=True):
+        if interpolate:
+            input = nn.functional.interpolate(input, target.shape[-2:], mode='bilinear', align_corners=True)
+        input = input.squeeze(dim=1)
+        if mask is not None:
+            input = input[mask]
+            target = target[mask]
+        g = torch.log(input) - torch.log(target)
+        # n, c, h, w = g.shape
+        # norm = 1/(h*w)
+        # Dg = norm * torch.sum(g**2) - (0.85/(norm**2)) * (torch.sum(g))**2
+
+        Dg = torch.var(g) + 0.15 * torch.pow(torch.mean(g), 2)
+        return 10 * torch.sqrt(Dg)
+
+if __name__=='__main__':
+
+    dataset = DepthDataset("OstringDepthDataset/OstringDataSet.csv",
+    "OstringDepthDataset/imgs/",
+    "OstringDepthDataset/depth_labels/"
+    )
+    loader = DataLoader(dataset=dataset,batch_size=2)
+    model = YOLOv3(num_classes=config.NUM_CLASSES).to(config.DEVICE)
+    for idx,(x,y,depth_target) in enumerate(loader):
+        depth_target=depth_target.to(config.DEVICE,dtype=torch.float)
+        x = x.to(config.DEVICE,dtype=torch.float)
+        y0, y1, y2 = (
+            y[0].to(config.DEVICE),
+            y[1].to(config.DEVICE),
+            y[2].to(config.DEVICE),
+        )
+        with torch.no_grad():
+            out=model(x)
+        loss_fn=SILogLoss()
+        mask = depth_target > 1.0
+        out[2] = torch.clamp(out[2],1.0,255.0)
+        l_dense = loss_fn(out[2].permute(0,3,1,2), depth_target, mask=mask.to(torch.bool), interpolate=True)
+        print(l_dense)
