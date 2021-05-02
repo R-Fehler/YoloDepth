@@ -1,0 +1,7 @@
+MAP: 0.33653271198272705MAP: 0.320969820022583MAP: 0.4103260934352875MAP: 0.4133297801017761
+
+old nmu with 0.5 conf:
+MAP: 0.4323580265045166 3.5min
+new torchvision base nmu with 0.5 conf. with filtering and max num of bboxes=20
+MAP: 0.40880560874938965 2min
+MAP: 0.4323314130306244 2.1 min with max num bboxes=200
