@@ -16,32 +16,6 @@ List is structured by "B" indicating a residual block followed by the number of 
 "S" is for scale prediction block and computing the yolo loss
 "U" is for upsampling the feature map and concatenating with a previous layer
 """
-arch_config = [
-    (32, 3, 1),
-    (64, 3, 2),
-    ["B", 1],
-    (128, 3, 2),
-    ["B", 2],
-    (256, 3, 2),
-    ["B", 8],
-    (512, 3, 2),
-    ["B", 8],
-    (1024, 3, 2),
-    ["B", 4],  # To this point is Darknet-53
-    (512, 1, 1),
-    (1024, 3, 1),
-    "D",
-    (256, 1, 1),
-    "U",
-    (256, 1, 1),
-    (512, 3, 1),
-    "D",
-    (128, 1, 1),
-    "U",
-    (128, 1, 1),
-    (256, 3, 1),
-    "D",
-]
 # arch_config = [
 #     (32, 3, 1),
 #     (64, 3, 2),
@@ -56,18 +30,44 @@ arch_config = [
 #     ["B", 4],  # To this point is Darknet-53
 #     (512, 1, 1),
 #     (1024, 3, 1),
-#     "S",
+#     "D",
 #     (256, 1, 1),
 #     "U",
 #     (256, 1, 1),
 #     (512, 3, 1),
-#     "S",
+#     "D",
 #     (128, 1, 1),
 #     "U",
 #     (128, 1, 1),
 #     (256, 3, 1),
-#     "S",
+#     "D",
 # ]
+arch_config = [
+    (32, 3, 1),
+    (64, 3, 2),
+    ["B", 1],
+    (128, 3, 2),
+    ["B", 2],
+    (256, 3, 2),
+    ["B", 8],
+    (512, 3, 2),
+    ["B", 8],
+    (1024, 3, 2),
+    ["B", 4],  # To this point is Darknet-53
+    (512, 1, 1),
+    (1024, 3, 1),
+    "S",
+    (256, 1, 1),
+    "U",
+    (256, 1, 1),
+    (512, 3, 1),
+    "S",
+    (128, 1, 1),
+    "U",
+    (128, 1, 1),
+    (256, 3, 1),
+    "S",
+]
 
 
 
@@ -118,7 +118,7 @@ class ScalePrediction(nn.Module):
         self.pred = nn.Sequential(
             CNNBlock(in_channels, 2 * in_channels, kernel_size=3, padding=1),
             CNNBlock(
-                2 * in_channels, (num_classes + 5) * 3, bn_act=False, kernel_size=1
+                2 * in_channels, (num_classes + 5 +1 ) * 3, bn_act=False, kernel_size=1 # +1 is depth value of bbox
             ),
         )
         self.num_classes = num_classes
@@ -126,7 +126,7 @@ class ScalePrediction(nn.Module):
     def forward(self, x):
         return (
             self.pred(x)
-            .reshape(x.shape[0], 3, self.num_classes + 5, x.shape[2], x.shape[3])
+            .reshape(x.shape[0], 3, self.num_classes + 5 + 1, x.shape[2], x.shape[3])
             .permute(0, 1, 3, 4, 2)
         )
 
@@ -237,17 +237,7 @@ if __name__ == "__main__":
     model = YOLOv3(num_classes=num_classes)
     x = torch.randn((2, 3, IMAGE_SIZE, IMAGE_SIZE))
     out = model(x)
-    assert model(x)[0].shape == (2, IMAGE_SIZE//32, IMAGE_SIZE//32, 1)
-    assert model(x)[1].shape == (2, IMAGE_SIZE//16, IMAGE_SIZE//16, 1)
-    assert model(x)[2].shape == (2, IMAGE_SIZE//8, IMAGE_SIZE//8, 1)
+    assert out[0].shape == (2,3, IMAGE_SIZE//32, IMAGE_SIZE//32, num_classes + 5 +1)
+    assert out[1].shape == (2,3, IMAGE_SIZE//16, IMAGE_SIZE//16,  num_classes + 5 +1)
+    assert out[2].shape == (2,3, IMAGE_SIZE//8, IMAGE_SIZE//8,  num_classes + 5 +1)
     print("Success!")
-
-    dataset = DepthDataset("DepthDataset/DepthExampleDense.csv",
-    "DepthDataset/imgs/",
-    "DepthDataset/depth_imgs/"
-    )
-    loader = DataLoader(dataset=dataset,batch_size=1)
-    for x,y in loader:
-        y0,y1,y2=y
-        out=model(x)
-        print(out)

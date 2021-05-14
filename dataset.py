@@ -30,6 +30,7 @@ class YOLODataset(Dataset):
         csv_file,
         img_dir,
         label_dir,
+        depth_labels_dir,
         anchors,
         image_size=416,
         S=[13, 26, 52],
@@ -37,8 +38,10 @@ class YOLODataset(Dataset):
         transform=None,
     ):
         self.annotations = pd.read_csv(csv_file)
+        self.annotations_depth = pd.read_csv(csv_file,delimiter=',')
         self.img_dir = img_dir
         self.label_dir = label_dir
+        self.depth_labels_dir = depth_labels_dir
         self.image_size = image_size
         self.transform = transform
         self.S = S
@@ -51,11 +54,22 @@ class YOLODataset(Dataset):
     def __len__(self):
         return len(self.annotations)
 
+    # target nicht tiefe ziel generieren.... nicht hier sondern im Loss
+    # ausser bei mapping werten.
+    #im csv file: img,depthlabel,bboxes
+
     def __getitem__(self, index):
-        label_path = os.path.join(self.label_dir, self.annotations.iloc[index, 1])
-        bboxes = np.roll(np.loadtxt(fname=label_path, delimiter=",", ndmin=2), 4, axis=1).tolist()
+        label_path = os.path.join(self.label_dir, self.annotations.iloc[index, 2])
+        bboxes = np.roll(np.loadtxt(fname=label_path, delimiter=" ", ndmin=2), 4, axis=1).tolist()
         img_path = os.path.join(self.img_dir, self.annotations.iloc[index, 0])
-        image = np.array(Image.open(img_path).convert("RGB"))
+        # image = np.array(Image.open(img_path).convert("RGB"))
+        depth_label_path = os.path.join(self.depth_labels_dir, self.annotations.iloc[index, 1])
+        # TODO check resizing and scaling. is native res possible?
+        depth_target = np.array(Image.open(depth_label_path).resize((416,416)))/255.0
+        image = np.array(Image.open(img_path).convert("RGB").resize((416,416)))/255.0
+        image = np.transpose(image,(2,0,1)) # channels first
+
+
 
         if self.transform:
             augmentations = self.transform(image=image, bboxes=bboxes)
@@ -63,10 +77,10 @@ class YOLODataset(Dataset):
             bboxes = augmentations["bboxes"]
 
         # Below assumes 3 scale predictions (as paper) and same num of anchors per scale
-        targets = [torch.zeros((self.num_anchors // 3, S, S, 6)) for S in self.S]
+        targets = [torch.zeros((self.num_anchors // 3, S, S, 7)) for S in self.S]
         for box in bboxes:
             iou_anchors = iou(torch.tensor(box[2:4]), self.anchors)
-            anchor_indices = iou_anchors.argsort(descending=True, dim=0)
+            anchor_indices = iou_anchors.argsort(descending=True, dim=0) # sort anchors by IoU with Target Bbox
             x, y, width, height, class_label = box
             has_anchor = [False] * 3  # each scale should have one anchor
             for anchor_idx in anchor_indices:
@@ -74,10 +88,10 @@ class YOLODataset(Dataset):
                 anchor_on_scale = anchor_idx % self.num_anchors_per_scale
                 S = self.S[scale_idx]
                 i, j = int(S * y), int(S * x)  # which cell
-                anchor_taken = targets[scale_idx][anchor_on_scale, i, j, 0]
+                anchor_taken = targets[scale_idx][anchor_on_scale, i, j, 0] # eg [1,2,3,0] check if previously anchor was taken
                 if not anchor_taken and not has_anchor[scale_idx]:
                     targets[scale_idx][anchor_on_scale, i, j, 0] = 1
-                    x_cell, y_cell = S * x - j, S * y - i  # both between [0,1]
+                    x_cell, y_cell = S * x - j, S * y - i  # both between [0,1] scaled to cell coords
                     width_cell, height_cell = (
                         width * S,
                         height * S,
@@ -85,14 +99,22 @@ class YOLODataset(Dataset):
                     box_coordinates = torch.tensor(
                         [x_cell, y_cell, width_cell, height_cell]
                     )
+                    # TODO this value is only viable when there is a mapped object
+                    # Mapping output in den label txt files das mit rausschreibt
+                    if (len(box)==6):
+                        z = box[5]
+                    # config einstellbar machen ob ich parameter target oder depthmap nehme
+                    else:
+                        z = 0
                     targets[scale_idx][anchor_on_scale, i, j, 1:5] = box_coordinates
-                    targets[scale_idx][anchor_on_scale, i, j, 5] = int(class_label)
+                    targets[scale_idx][anchor_on_scale, i, j, 5] = z
+                    targets[scale_idx][anchor_on_scale, i, j, 6] = int(class_label)
                     has_anchor[scale_idx] = True
 
                 elif not anchor_taken and iou_anchors[anchor_idx] > self.ignore_iou_thresh:
                     targets[scale_idx][anchor_on_scale, i, j, 0] = -1  # ignore prediction
-
-        return image, tuple(targets)
+        
+        return image, tuple(targets), depth_target
 
 
 class DepthDataset(Dataset):
@@ -232,19 +254,20 @@ def test():
     transform = config.test_transforms
 
     dataset = YOLODataset(
-        "PASCAL_VOC/train.csv",
-        "PASCAL_VOC/images/",
-        "PASCAL_VOC/labels/",
+        "OstringDepthDataset/OstringDataSet.csv",
+        "OstringDepthDataset/imgs/",
+        "OstringDepthDataset/bbox_labels/",
+        "OstringDepthDataset/depth_labels/",
         S=[13, 26, 52],
         anchors=anchors,
-        transform=transform,
+        transform=None,
     )
     S = [13, 26, 52]
     scaled_anchors = torch.tensor(anchors) / (
         1 / torch.tensor(S).unsqueeze(1).unsqueeze(1).repeat(1, 3, 2)
     )
     loader = DataLoader(dataset=dataset, batch_size=1, shuffle=True)
-    for x, y in loader:
+    for index , (x, y, depthtarget) in enumerate(loader):
         boxes = []
 
         for i in range(y[0].shape[1]):
@@ -253,11 +276,11 @@ def test():
             print(y[i].shape)
             boxes += cells_to_bboxes(
                 y[i], is_preds=False, S=y[i].shape[2], anchors=anchor
-            )[0]
+            ).tolist()[0]
         boxes = nms(boxes, iou_threshold=1, threshold=0.7, box_format="midpoint")
         print(boxes)
-        plot_image(x[0].permute(1, 2, 0).to("cpu"), boxes)
+        plot_image(x[0].to("cpu"), boxes,filename=f'datasetTest_{index}.png')
 
 
 if __name__ == "__main__":
-    testDepth()
+    test()
