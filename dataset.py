@@ -4,6 +4,7 @@ Creates a Pytorch dataset to load the Pascal VOC & MS COCO datasets
 
 from albumentations import augmentations
 from numpy.lib.type_check import _imag_dispatcher
+from torch._C import dtype
 import config
 import numpy as np
 import os
@@ -12,6 +13,10 @@ import torch
 from torchvision.utils import save_image
 import matplotlib.pyplot as plt
 import scipy.ndimage
+from scipy.interpolate import griddata
+from threading import Thread
+
+import tqdm
 
 from PIL import Image, ImageFile
 from torch.utils.data import Dataset, DataLoader
@@ -53,23 +58,46 @@ class YOLODataset(Dataset):
 
     def __len__(self):
         return len(self.annotations)
+        
+    def __getitem__(self,index):
+        return self.get_complete_targets(index)
 
     # target nicht tiefe ziel generieren.... nicht hier sondern im Loss
     # ausser bei mapping werten.
     #im csv file: img,depthlabel,bboxes
 
-    def __getitem__(self, index):
-        label_path = os.path.join(self.label_dir, self.annotations.iloc[index, 2])
-        bboxes = np.roll(np.loadtxt(fname=label_path, delimiter=" ", ndmin=2), 4, axis=1).tolist()
-        img_path = os.path.join(self.img_dir, self.annotations.iloc[index, 0])
+    def get_complete_targets(self, index):
         # image = np.array(Image.open(img_path).convert("RGB"))
-        depth_label_path = os.path.join(self.depth_labels_dir, self.annotations.iloc[index, 1])
+        if(self.depth_labels_dir != None):
+            label_path = os.path.join(self.label_dir, self.annotations.iloc[index, 2])
+            bboxes = np.roll(np.loadtxt(fname=label_path, delimiter=" ", ndmin=2), 4, axis=1).tolist()
+            img_path = os.path.join(self.img_dir, self.annotations.iloc[index, 0])
+            depth_label_path = os.path.join(self.depth_labels_dir, self.annotations.iloc[index, 1])
+            dense_depth_target = np.array(Image.open(depth_label_path).resize((416,416)),dtype=np.dtype('float'))/255.0
+        else:
+            label_path = os.path.join(self.label_dir, self.annotations.iloc[index, 1])
+            bboxes = np.roll(np.loadtxt(fname=label_path, delimiter=" ", ndmin=2), 4, axis=1).tolist()
+            img_path = os.path.join(self.img_dir, self.annotations.iloc[index, 0])
+            dense_depth_target = 0 
         # TODO check resizing and scaling. is native res possible?
-        depth_target = np.array(Image.open(depth_label_path).resize((416,416)))/255.0
-        image = np.array(Image.open(img_path).convert("RGB").resize((416,416)))/255.0
+        # dense depth prediction 
+        image = np.array(Image.open(img_path).convert("RGB").resize((416,416)),dtype=np.dtype('float'))/255.0
         image = np.transpose(image,(2,0,1)) # channels first
 
 
+        # valid_depth_pixels = depth_target > 0
+        # # outputs two vectors (x y) of length n
+        # valid_depth_pixels_indices = np.where(valid_depth_pixels == True)
+        # # this does output a 1d vector of length n
+        # valid_depth_pixels_values = depth_target[valid_depth_pixels_indices]
+        # # this might be error
+        # grid_x, grid_y = np.mgrid[0:1536, 0:4096]
+        # or this might be wrong: 2 xy vector for indices might need to be transposed or something
+        # dense_depth_target = griddata(valid_depth_pixels_indices,valid_depth_pixels_values,(grid_x,grid_y),method='nearest')
+        # dense_depth_target_lin = griddata(valid_depth_pixels_indices,valid_depth_pixels_values,(grid_x,grid_y),method='linear')
+        # dense_depth_target_cub = griddata(valid_depth_pixels_indices,valid_depth_pixels_values,(grid_x,grid_y),method='cubic')
+        # im = Image.fromarray(dense...)
+        # im.save(fp) 
 
         if self.transform:
             augmentations = self.transform(image=image, bboxes=bboxes)
@@ -114,8 +142,30 @@ class YOLODataset(Dataset):
                 elif not anchor_taken and iou_anchors[anchor_idx] > self.ignore_iou_thresh:
                     targets[scale_idx][anchor_on_scale, i, j, 0] = -1  # ignore prediction
         
-        return image, tuple(targets), depth_target
+        return image, tuple(targets), dense_depth_target
+    
 
+
+
+    def prepare_griddata_depth_maps(self, index):
+        '''
+        this function saves the dense depth map images 
+        '''
+        depth_label_path = os.path.join(self.depth_labels_dir, self.annotations.iloc[index, 1])
+        depth_target = np.array(Image.open(depth_label_path))
+        valid_depth_pixels = depth_target > 0
+        # outputs two vectors (x y) of length n
+        valid_depth_pixels_indices = np.where(valid_depth_pixels == True)
+        # this does output a 1d vector of length n
+        valid_depth_pixels_values = depth_target[valid_depth_pixels_indices]
+        # this might be error
+        grid_x, grid_y = np.mgrid[0:1536, 0:4096]
+        # or this might be wrong: 2 xy vector for indices might need to be transposed or something
+        dense_depth_target = griddata(valid_depth_pixels_indices,valid_depth_pixels_values,(grid_x,grid_y),method='nearest')
+        # dense_depth_target = dense_depth_target.astype(np.dtype('int32'))
+        savePath=os.path.join(self.depth_labels_dir,'griddata_linear',self.annotations.iloc[index, 1])
+        Image.fromarray(dense_depth_target).save(savePath)
+        return 0
 
 class DepthDataset(Dataset):
     def __init__(
@@ -146,7 +196,7 @@ class DepthDataset(Dataset):
         # bboxes = np.roll(np.loadtxt(fname=label_path, delimiter=" ", ndmin=2), 4, axis=1).tolist() # [class, x,y,w,h] roll to [x,y,w,h,class]
         depth_target = np.array(Image.open(label_path).resize((416,416)))/255.0
         img_path = os.path.join(self.img_dir, self.annotations.iloc[index, 0])
-        image = np.array(Image.open(img_path).convert("RGB").resize((416,416)))/255.0
+        image = np.array(Image.open(img_path).convert("RGB").resize((416,416)),dtype=np.dtype('float'))/255.0
         if self.transform:
             image = self.transform(image)
             depth_target = self.transform(depth_target)
@@ -214,14 +264,49 @@ def testDepth():
     # "KITTI/trainval_combined/"
     # ) 
     
-    dataset = DepthDataset("OstringDepthDataset/OstringDataSet.csv",
-    "OstringDepthDataset/imgs/",
-    "OstringDepthDataset/depth_labels/"
+    dataset = YOLODataset(
+        "OstringDepthDataset/OstringDataSet.csv",
+        "OstringDepthDataset/imgs/",
+        "OstringDepthDataset/bbox_labels/",
+        "OstringDepthDataset/depth_labels/",
+        S=[13, 26, 52],
+        anchors=config.ANCHORS,
+        transform=None,
     )
-    loader = DataLoader(dataset=dataset,batch_size=1)
+    loader = DataLoader(dataset=dataset,batch_size=1,shuffle=False, num_workers=32)
     for idx,(x,y,depth_target) in enumerate(loader):
         y0,y1,y2=y
-        saveImgAndLabel(x,y2,depth_target,f'datasettestNN/{idx}_datasettest.png')
+
+        # boxes = []
+
+        # for i in range(y[0].shape[1]):
+        #     anchor = scaled_anchors[i]
+        #     print(anchor.shape)
+        #     print(y[i].shape)
+        #     boxes += cells_to_bboxes(
+        #         y[i], is_preds=False, S=y[i].shape[2], anchors=anchor
+        #     ).tolist()[0]
+        # boxes = nms(boxes, iou_threshold=1, threshold=0.7, box_format="midpoint")
+        # print(boxes)
+        # plot_image(x[0].to("cpu"), boxes,filename=f'datasetTest_{idx}.png')
+
+        Thread(target=saveImgAndDenseDepthLabel, args=(x,depth_target,f'datasettestNNDense/{idx}_datasettest.png'), daemon=True).start()
+        # saveImgAndDenseDepthLabel(x,depth_target,f'datasettestNNDense/{idx}_datasettest.png')
+
+def saveGridData():
+    dataset = YOLODataset(
+        "OstringDepthDataset/OstringDataSet.csv",
+        "OstringDepthDataset/imgs/",
+        "OstringDepthDataset/bbox_labels/",
+        "OstringDepthDataset/depth_labels/",
+        S=[13, 26, 52],
+        anchors=config.ANCHORS,
+        transform=None,
+    )
+    loader = DataLoader(dataset=dataset,batch_size=48,shuffle=False, num_workers=0)
+    for _ in tqdm.tqdm(loader):
+        pass
+        
 
 def saveImg(x,fp):
     arr = x.mul(255).add_(0.5).clamp_(0, 255).squeeze().to('cpu', torch.uint8).numpy()
@@ -238,6 +323,10 @@ def saveImgPredLabel(x,y,img,depthImg,fp):
     ax4.imshow(depthImg.cpu())
     f.savefig(fp,dpi=150)
     
+def saveImgBBoxDepthLabel(x,y,depthImg,fp):
+    x = x.mul(255).add_(0.5).clamp_(0, 255).squeeze().to('cpu', torch.uint8).numpy()
+    y = y.mul(255).add_(0.5).clamp_(0, 255).squeeze().to('cpu', torch.uint8).numpy()
+
 def saveImgAndLabel(x,y,depthImg,fp):
     # labels =[l/torch.max(l).item() for l in labels]
     # depth_target =[dt/torch.max(dt).item() for dt in depth_target]
@@ -247,7 +336,14 @@ def saveImgAndLabel(x,y,depthImg,fp):
     ax2.imshow(y)
     ax3.imshow(depthImg.permute(1,2,0).cpu())
     f.savefig(fp,dpi=150)
-
+def saveImgAndDenseDepthLabel(x,depthImg,fp):
+    # labels =[l/torch.max(l).item() for l in labels]
+    # depth_target =[dt/torch.max(dt).item() for dt in depth_target]
+    f, (ax1,ax3) = plt.subplots(1,2)
+    ax1.imshow(x.squeeze().permute(1,2,0).cpu())
+    ax3.imshow(depthImg.squeeze().cpu())
+    f.savefig(fp,dpi=150)
+    plt.clf()
 def test():
     anchors = config.ANCHORS
 
@@ -283,4 +379,4 @@ def test():
 
 
 if __name__ == "__main__":
-    test()
+    saveGridData()

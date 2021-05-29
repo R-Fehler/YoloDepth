@@ -1,3 +1,4 @@
+from torch._C import dtype
 import config
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
@@ -87,12 +88,12 @@ def nms_torch(bboxes, iou_threshold, threshold):
     bboxes = sorted(bboxes, key=lambda x: x[1], reverse=True)
 
     bboxes_after_nms = []
-    bbox_coords=[box[2:] for box in bboxes]
+    bbox_coords=[box[2:6] for box in bboxes]
     bbox_scores=[box[1] for box in bboxes]
     bbox_classes=[box[0]for box in bboxes]
-    bbox_coords = torch.tensor(bbox_coords).to('cuda:0')
-    bbox_scores = torch.tensor(bbox_scores).to('cuda:0')
-    bbox_classes = torch.tensor(bbox_classes).to('cuda:0')
+    bbox_coords = torch.tensor(bbox_coords).to(config.DEVICE)
+    bbox_scores = torch.tensor(bbox_scores).to(config.DEVICE)
+    bbox_classes = torch.tensor(bbox_classes).to(config.DEVICE)
     if(len(bboxes)<1):
         return bboxes
     else:
@@ -166,9 +167,9 @@ def non_max_suppression(bboxes, iou_threshold, threshold, box_format="corners"):
 
     return bboxes_after_nms
 
-
+# TODO check correctness
 def mean_average_precision(
-    pred_boxes, true_boxes, iou_threshold=0.5, box_format="midpoint", num_classes=20
+    pred_boxes, true_boxes, iou_threshold=0.5, box_format="midpoint", num_classes=20, reduction=True,
 ):
     """
     Video explanation of this function:
@@ -187,6 +188,7 @@ def mean_average_precision(
     Returns:
         float: mAP value across all classes given a specific IoU threshold
     """
+    # converted_bboxes = torch.cat((best_class, scores, x, y, w_h,z), dim=-1).reshape(BATCH_SIZE, num_anchors * S * S, 7)
 
     # list storing all AP for respective classes
     average_precisions = []
@@ -274,15 +276,23 @@ def mean_average_precision(
         recalls = torch.cat((torch.tensor([0]), recalls))
         # torch.trapz for numerical integration
         average_precisions.append(torch.trapz(precisions, recalls))
-
-    return sum(average_precisions) / len(average_precisions)
-
+    if reduction==True:
+        return sum(average_precisions) / len(average_precisions)
+    else:
+        return average_precisions
 
 def plot_image(image, boxes,filename='default.jpg'):
     """Plots predicted bounding boxes on the image"""
     cmap = plt.get_cmap("tab20b")
-    class_labels = config.COCO_LABELS if config.DATASET=='COCO' else config.PASCAL_CLASSES
-    colors = [cmap(i) for i in np.linspace(0, 1, len(class_labels))]
+    if config.DATASET=='COCO':
+        class_labels = config.COCO_LABELS
+    elif config.DATASET=='PASCAL':
+        class_labels = config.PASCAL_CLASSES
+    elif config.DATASET == 'Mapillary':
+        class_labels = config.MVD_CLASSES
+    else:
+        class_labels = config.COCO_LABELS
+    colors = [cmap(i) for i in np.linspace(0, 1, 100)]
     im = np.array(image)
     height, width, _ = im.shape
 
@@ -296,7 +306,7 @@ def plot_image(image, boxes,filename='default.jpg'):
 
     # Create a Rectangle patch
     for box in boxes:
-        assert len(box) == 6, "box should contain class pred, confidence, x, y, width, height"
+        assert len(box) == 7, "box should contain class pred, confidence, x, y, width, height and depth"
         class_pred = box[0]
         box = box[2:]
         upper_left_x = box[0] - box[2] / 2
@@ -305,7 +315,7 @@ def plot_image(image, boxes,filename='default.jpg'):
             (upper_left_x * width, upper_left_y * height),
             box[2] * width,
             box[3] * height,
-            linewidth=2,
+            linewidth=0.5,
             edgecolor=colors[int(class_pred)],
             facecolor="none",
         )
@@ -314,13 +324,19 @@ def plot_image(image, boxes,filename='default.jpg'):
         plt.text(
             upper_left_x * width,
             upper_left_y * height,
-            s=class_labels[int(class_pred)],
+            s="c:" + str(int(class_pred)) + f"d:{box[4]:.1f}" if config.DS_NAME=='Ostring' else "c:" + str(int(class_pred)),
+            # s=f"d:{box[4]:.1f}",
             color="white",
             verticalalignment="top",
             bbox={"color": colors[int(class_pred)], "pad": 0},
         )
+        plt.rc('font', size=6) 
 
     plt.savefig(filename)
+
+# TODO for plotting dense prediction or calculate dense difference between pred and label
+def spareDepthPredictionToDenseMap(depth_prediction):
+    pass
 
 
 def get_evaluation_bboxes(
@@ -337,8 +353,8 @@ def get_evaluation_bboxes(
     train_idx = 0
     all_pred_boxes = []
     all_true_boxes = []
-    for batch_idx, (x, labels) in enumerate(tqdm(loader)):
-        x = x.to(device)
+    for batch_idx, (x, labels, _) in enumerate(tqdm(loader)):
+        x = x.to(config.DEVICE,dtype=torch.float)
 
         with torch.no_grad():
             predictions = model(x)
@@ -347,17 +363,17 @@ def get_evaluation_bboxes(
         bboxes = [[] for _ in range(batch_size)]
         for i in range(3):
             S = predictions[i].shape[2]
-            anchor = torch.tensor([*anchors[i]]).to(device) * S
+            anchor = torch.tensor([*anchors[i]]).to(config.DEVICE) * S
             boxes_scale_i = cells_to_bboxes(
                 predictions[i], anchor, S=S, is_preds=True
-            )
+            ).tolist()
             for idx, (box) in enumerate(boxes_scale_i):
                 bboxes[idx] += box
 
         # we just want one bbox for each label, not one for each scale
         true_bboxes = cells_to_bboxes(
             labels[2], anchor, S=S, is_preds=False
-        )
+        ).tolist()
 
         for idx in range(batch_size):
             nms_boxes = nms_torch(
@@ -379,8 +395,8 @@ def get_evaluation_bboxes(
     model.train()
     return all_pred_boxes, all_true_boxes
 
-
-def cells_to_bboxes(predictions, anchors, S, is_preds=True):
+# TODO also return depth predictions with bbox
+def cells_to_bboxes(predictions, anchors, S, is_preds=True,reshape=True):
     """
     Scales the predictions coming from the model to
     be relative to the entire image such that they for example later
@@ -402,10 +418,10 @@ def cells_to_bboxes(predictions, anchors, S, is_preds=True):
         box_predictions[..., 0:2] = torch.sigmoid(box_predictions[..., 0:2])
         box_predictions[..., 2:] = torch.exp(box_predictions[..., 2:]) * anchors
         scores = torch.sigmoid(predictions[..., 0:1])
-        best_class = torch.argmax(predictions[..., 5:], dim=-1).unsqueeze(-1)
+        best_class = torch.argmax(predictions[..., 6:], dim=-1).unsqueeze(-1)
     else:
         scores = predictions[..., 0:1]
-        best_class = predictions[..., 5:6]
+        best_class = predictions[..., 6:7]
 
     cell_indices = (
         torch.arange(S)
@@ -416,8 +432,13 @@ def cells_to_bboxes(predictions, anchors, S, is_preds=True):
     x = 1 / S * (box_predictions[..., 0:1] + cell_indices)
     y = 1 / S * (box_predictions[..., 1:2] + cell_indices.permute(0, 1, 3, 2, 4))
     w_h = 1 / S * box_predictions[..., 2:4]
-    converted_bboxes = torch.cat((best_class, scores, x, y, w_h), dim=-1).reshape(BATCH_SIZE, num_anchors * S * S, 6)
-    return converted_bboxes.tolist()
+    z = predictions[...,5:6]
+    if reshape:
+        converted_bboxes = torch.cat((best_class, scores, x, y, w_h,z), dim=-1).reshape(BATCH_SIZE, num_anchors * S * S, 7)
+    else:
+        converted_bboxes = torch.cat((best_class, scores, x, y, w_h,z), dim=-1).reshape(BATCH_SIZE, num_anchors, S , S, 7)
+
+    return converted_bboxes
 
 def check_class_accuracy(model, loader, threshold):
     model.eval()
@@ -425,8 +446,8 @@ def check_class_accuracy(model, loader, threshold):
     tot_noobj, correct_noobj = 0, 0
     tot_obj, correct_obj = 0, 0
 
-    for idx, (x, y) in enumerate(tqdm(loader)):
-        x = x.to(config.DEVICE)
+    for idx, (x, y,_) in enumerate(tqdm(loader)):
+        x = x.to(config.DEVICE,dtype=torch.float)
         with torch.no_grad():
             out = model(x)
 
@@ -436,7 +457,7 @@ def check_class_accuracy(model, loader, threshold):
             noobj = y[i][..., 0] == 0  # in paper this is Iobj_i
 
             correct_class += torch.sum(
-                torch.argmax(out[i][..., 5:][obj], dim=-1) == y[i][..., 5][obj]
+                torch.argmax(out[i][..., 6:][obj], dim=-1) == y[i][..., 6][obj]
             )
             tot_class_preds += torch.sum(obj)
 
@@ -456,7 +477,7 @@ def get_mean_std(loader):
     # var[X] = E[X**2] - E[X]**2
     channels_sum, channels_sqrd_sum, num_batches = 0, 0, 0
 
-    for data, _ in tqdm(loader):
+    for data, _,_ in tqdm(loader):
         channels_sum += torch.mean(data, dim=[0, 2, 3])
         channels_sqrd_sum += torch.mean(data ** 2, dim=[0, 2, 3])
         num_batches += 1
@@ -489,14 +510,24 @@ def load_checkpoint(checkpoint_file, model, optimizer, lr):
 
 def load_checkpoint_transfer(checkpoint_file, model, optimizer, lr):
     print("=> Loading checkpoint")
-    checkpoint = torch.load(checkpoint_file, map_location=config.DEVICE)
-    model.load_state_dict(checkpoint["state_dict"],strict=False)
-    optimizer.load_state_dict(checkpoint["optimizer"])
+    pretrained_dict = torch.load(checkpoint_file, map_location=config.DEVICE)
+    # model_dict = model.state_dict()
+    pretrained_dict_state = pretrained_dict["state_dict"]
+    # # 1. filter out unnecessary keys
+    pretrained_dict_state = {k: v for k, v in pretrained_dict_state.items() if 'layers.15.pred' in k}
+    pretrained_dict_state = {k: v for k, v in pretrained_dict_state.items() if 'layers.22.pred' in k}
+    pretrained_dict_state = {k: v for k, v in pretrained_dict_state.items() if 'layers.29.pred' in k}
+    # # 2. overwrite entries in the existing state dict
+    # model_dict.update(pretrained_dict) 
+    # # 3. load the new state dict
+    # model.load_state_dict(pretrained_dict)
+    model.load_state_dict(pretrained_dict_state,strict=False)
+    # optimizer.load_state_dict(pretrained_dict["optimizer"])
 
-    # If we don't do this then it will just have learning rate of old checkpoint
-    # and it will lead to many hours of debugging \:
-    for param_group in optimizer.param_groups:
-        param_group["lr"] = lr
+    # # If we don't do this then it will just have learning rate of old checkpoint
+    # # and it will lead to many hours of debugging \:
+    # for param_group in optimizer.param_groups:
+    #     param_group["lr"] = lr
 
 def get_loaders(train_csv_path, test_csv_path):
     from dataset import YOLODataset
@@ -556,8 +587,8 @@ def get_loaders(train_csv_path, test_csv_path):
 
 def plot_couple_examples(model, loader, thresh, iou_thresh, anchors,epochNo=0):
     model.eval()
-    x, y = next(iter(loader))
-    x = x.to(config.DEVICE)
+    x, y, depth_target = next(iter(loader))
+    x = x.to(config.DEVICE,dtype=torch.float)
     with torch.no_grad():
         out = model(x)
         bboxes = [[] for _ in range(x.shape[0])]
@@ -566,17 +597,17 @@ def plot_couple_examples(model, loader, thresh, iou_thresh, anchors,epochNo=0):
             anchor = anchors[i]
             boxes_scale_i = cells_to_bboxes(
                 out[i], anchor, S=S, is_preds=True
-            )
+            ).tolist()
             for idx, (box) in enumerate(boxes_scale_i):
                 bboxes[idx] += box
 
         model.train()
-
-    for i in range(batch_size):
-        nms_boxes = non_max_suppression(
-            bboxes[i], iou_threshold=iou_thresh, threshold=thresh, box_format="midpoint",
+    # TODO return to range(BS)
+    for i in range(batch_size//2):
+        nms_boxes = nms_torch(
+            bboxes[i], iou_threshold=iou_thresh, threshold=thresh
         )
-        plot_image(x[i].permute(1,2,0).detach().cpu(), nms_boxes,filename=f'imgs/{epochNo}_{i}.jpg')
+        plot_image(x[i].permute(1,2,0).detach().cpu(), nms_boxes,filename=f'{config.TRAINING_EXAMPLES_PLOT_DIR}/{epochNo}_{i}.jpg')
 
 
 

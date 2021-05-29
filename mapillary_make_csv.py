@@ -25,18 +25,16 @@ def checkAndFilterFilesWithSameNameExistInOtherDir(list, OtherDir, extension):
 
 
 def main():
-    depth_dir = "../DepthMapsOstringTest/map/"
-    img_dir = "./OstringDepthDataset/imgs/"
-    label_dir = "./OstringDepthDataset/bbox_labels/"
-    depth_list = getListofFileBaseNameInDir(depth_dir)
+    img_dir = "./MapillaryVistasDataset/images/test"
+    label_dir = "./MapillaryVistasDataset/labels/test"
     img_list = getListofFileBaseNameInDir(img_dir)
     label_list = getListofFileBaseNameInDir(label_dir)
-    union_of_lists = list(set(depth_list).intersection(img_list, label_list))
+    union_of_lists = list(set(img_list).intersection(label_list))
     union_of_lists = natsorted(union_of_lists)
 
-    csv = pd.DataFrame(list(zip([i+'.png' for i in union_of_lists], [i+'.png' for i in union_of_lists], [
-                       i+'.txt' for i in union_of_lists])), columns=['img', 'depthlabel', 'bbox labels'])
-    csv.to_csv("OstringDataSet_union.csv", index=False)
+    csv = pd.DataFrame(list(zip([i+'.jpg' for i in union_of_lists], [
+                       i+'.txt' for i in union_of_lists])), columns=['img', 'bbox labels'])
+    csv.to_csv("Mapillary_Vistas_Test.csv", index=False)
 
 
 if __name__ == '__main__':
