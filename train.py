@@ -4,6 +4,7 @@ Main file for training Yolo model on Pascal VOC and COCO dataset
 
 import os
 import shutil
+from albumentations.pytorch import transforms
 from matplotlib.pyplot import box
 from torch._C import dtype
 from torch.utils.data.dataloader import DataLoader
@@ -137,9 +138,20 @@ def depthMain():
             S=config.S,
             anchors=config.ANCHORS,
             transform=None,
+            cache_images=True
         )
         # TODO make test dataset csv etc
-        test_dataset = train_dataset
+        test_dataset = YOLODataset(
+            config.DATASET_TEST_CSV,
+            config.IMAGE_DIR,
+            config.BBOX_LABEL_DIR,
+            config.DEPTH_NN_MAP_LABEL,
+            S=config.S,
+            anchors=config.ANCHORS,
+            transform=None,
+            cache_images=True
+
+        )
 
     if dataset =='ObjectDetection':
         # TODO Dataset handling missing depth maps.
@@ -151,15 +163,19 @@ def depthMain():
             S=config.S,
             anchors=config.ANCHORS,
             transform=None,
+            cache_images=True
+
         )
         test_dataset = YOLODataset(
-            config.DATASET_VAL_CSV,
+            config.DATASET_TEST_CSV,
             config.IMAGE_DIR,
             config.BBOX_LABEL_DIR,
             None,
             S=config.S,
             anchors=config.ANCHORS,
             transform=None,
+            cache_images=True
+
         )
 
     if dataset == 'KITTI':
@@ -194,18 +210,39 @@ def depthMain():
         shutil.rmtree(dir)
     os.mkdir(dir)
 
+    cache_loader = DataLoader(dataset=train_dataset, batch_size=config.BATCH_SIZE, shuffle=False, num_workers=config.NUM_WORKERS)
+    for batch_indx, (x,y,depthtarget) in tqdm(enumerate(cache_loader)):
+        for i in range(0,x.shape[0]):
+            idx=batch_indx*config.BATCH_SIZE+i
+            train_dataset.imgs[idx] = x[i]
+            train_dataset.targets[idx] = (y[0][i],y[1][i],y[2][i])
+            train_dataset.depth_targets[idx] = depthtarget[i]
+    train_dataset.isCached=True
+
+    cache_loader = DataLoader(dataset=test_dataset, batch_size=config.BATCH_SIZE, shuffle=False, num_workers=config.NUM_WORKERS)
+    for batch_indx, (x,y,depthtarget) in tqdm(enumerate(cache_loader)):
+        for i in range(0,x.shape[0]):
+            idx=batch_indx*config.BATCH_SIZE+i
+            test_dataset.imgs[idx] = x[i]
+            test_dataset.targets[idx] = (y[0][i],y[1][i],y[2][i])
+            test_dataset.depth_targets[idx] = depthtarget[i]
+    test_dataset.isCached = True
     for epoch in range(config.NUM_EPOCHS):
 
-        plot_couple_examples(model, test_loader, 0.05, 0.25, scaled_anchors, epochNo=epoch)
-
+        plot_couple_examples(model, test_loader, config.CONF_THRESHOLD, config.NMS_IOU_THRESH, scaled_anchors,noOfExamples=2, epochNo=epoch)
+        
         if config.SAVE_MODEL:
-            save_checkpoint(model, optimizer, filename=config.SAVE_CHECKPOINT_FILE)
+            if epoch%2==0:
+                save_checkpoint(model, optimizer, filename=config.SAVE_CHECKPOINT_FILE)
+            else:
+                save_checkpoint(model, optimizer, filename='backup_'+config.SAVE_CHECKPOINT_FILE)
 
         print(f"Currently epoch {epoch}")
         print("On Train Eval loader:")
         # TODO implement testing of yoloDepth
 
-        if epoch % 3 == 0 and config.DATASET=='ObjectDetection':
+        # if epoch == 0 or (epoch > 1 and epoch % 3 == 0) and config.DATASET=='ObjectDetection':
+        if (epoch >= 0 and epoch % 3 == 0) :
             check_class_accuracy(model, test_loader, threshold=config.CONF_THRESHOLD)
             # TODO fix nms performance!
             pred_boxes, true_boxes = get_evaluation_bboxes(

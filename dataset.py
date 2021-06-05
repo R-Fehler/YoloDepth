@@ -63,7 +63,7 @@ class YOLODataset(Dataset):
         self.imgs = [None] * self.n
         self.targets = [None] * self.n
         self.depth_targets = [None] * self.n
-        self.cached=False
+        self.isCached=False
         # if cache_images:
             # n = self.n
             # gb = 0  # Gigabytes of cached images
@@ -82,7 +82,7 @@ class YOLODataset(Dataset):
         return len(self.annotations)
         
     def __getitem__(self,index):
-        if self.cached:
+        if self.isCached:
             return self.imgs[index],self.targets[index],self.depth_targets[index]
         return self.get_complete_targets(index)
 
