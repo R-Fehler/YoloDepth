@@ -4,18 +4,36 @@ import torch
 
 from albumentations.pytorch import ToTensorV2
 from utils import seed_everything
-# DS_NAME='Ostring'
-DS_NAME='Mapillary'
+DS_NAME='Ostring'
+# DS_NAME='OstringOverfit'
+# DS_NAME='Mapillary'
 
     # Ostring
     # --------
 if DS_NAME=='Ostring':
-    DATASET = 'DepthAndObjectDetection'
-    DATASET_TRAIN_CSV = 'OstringDepthDataset/OstringDataSet_1_example.csv'
+    # DATASET = 'DepthAndObjectDetection'
+    DATASET = 'ObjectDetection'
+    DATASET_TRAIN_CSV = 'OstringDepthDataset/OstringDataSetTrainingAndVal.csv'
+    DATASET_VAL_CSV = 'OstringDepthDataset/OstringDataSetValidation.csv'
+    DATASET_TEST_CSV = 'OstringDepthDataset/OstringDataSetTest.csv'
     IMAGE_DIR = 'OstringDepthDataset/imgs/'
     BBOX_LABEL_DIR = "OstringDepthDataset/bbox_labels/"
     DEPTH_NN_MAP_LABEL = "OstringDepthDataset/depth_labels/griddata_nearest/"
     NUM_CLASSES = 80
+
+
+    # Ostring low Examples Overfit
+    # --------
+if DS_NAME=='OstringOverfit':
+    DATASET = 'DepthAndObjectDetection'
+    DATASET_TRAIN_CSV = 'OstringDepthDataset/OstringDataSet_1_example.csv'
+    DATASET_VAL_CSV = 'OstringDepthDataset/OstringDataSet_1_example.csv'
+    DATASET_TEST_CSV = 'OstringDepthDataset/OstringDataSet_1_example.csv'
+    IMAGE_DIR = 'OstringDepthDataset/imgs/'
+    BBOX_LABEL_DIR = "OstringDepthDataset/bbox_labels/"
+    DEPTH_NN_MAP_LABEL = "OstringDepthDataset/depth_labels/griddata_nearest/"
+    NUM_CLASSES = 80
+
 # Mapillary Vistas
 # ----------------
 if DS_NAME == 'Mapillary':
@@ -48,11 +66,12 @@ PIN_MEMORY = True
 LOAD_MODEL = True
 TRANSFER_MODEL = False # because we dont change detection heads
 SAVE_MODEL = True
-LOAD_CHECKPOINT_FILE = "yolov3_pascal_78.1map_saved_correct_cls_labels.pth.tar"
-SAVE_CHECKPOINT_FILE = "yolov3_pascal_78.1map_saved_correct_cls_labels.pth.tar"
+LOAD_CHECKPOINT_FILE = "yolov3_pascal_78.1map_saved_correct_cls_labels_correct_anchors_Ostring_Detection_Only.pth.tar"
+SAVE_CHECKPOINT_FILE = "yolov3_pascal_78.1map_saved_correct_cls_labels_correct_anchors_Ostring_Detection_max_obj_test.pth.tar"
 IMG_DIR = DATASET + "/images/"
 LABEL_DIR = DATASET + "/labels/"
-TRAINING_EXAMPLES_PLOT_DIR = 'imgs_correct_clsLabels_new'
+TRAINING_EXAMPLES_PLOT_DIR = 'imgs_Ostring_testing_max_obj_no_depth'
+TRAINING_EXAMPLES_PLOT_DIR_DEPTH = TRAINING_EXAMPLES_PLOT_DIR +'/depthPred'
 # ANCHORS = [
 #     [(0.28, 0.22), (0.38, 0.48), (0.9, 0.78)],
 #     [(0.07, 0.15), (0.15, 0.11), (0.14, 0.29)],
@@ -60,9 +79,9 @@ TRAINING_EXAMPLES_PLOT_DIR = 'imgs_correct_clsLabels_new'
 # ]  # Note these have been rescaled to be between [0, 1]
 
 ANCHORS = [
-    [(0.00390625, 0.00390625), (0.00234375, 0.01953125), (0.0078125, 0.0078125)],
-    [(0.009375, 0.01953125), (0.021875, 0.01640625), (0.0109375, 0.06328125)],
     [(0.04375, 0.03984375), (0.0296875, 0.13203125), (0.153125, 0.1203125)],
+    [(0.009375, 0.01953125), (0.021875, 0.01640625), (0.0109375, 0.06328125)],
+    [(0.00390625, 0.00390625), (0.00234375, 0.01953125), (0.0078125, 0.0078125)],
 ]
 
 scale = 1.1
@@ -106,6 +125,13 @@ test_transforms = A.Compose(
         ToTensorV2(),
     ],
     bbox_params=A.BboxParams(format="yolo", min_visibility=0.4, label_fields=[]),
+)
+
+MY_TRANSFORMS = A.Compose(
+    [
+        A.Normalize(mean=[0, 0, 0], std=[1, 1, 1], max_pixel_value=255,),
+        ToTensorV2(),
+    ]
 )
 
 PASCAL_CLASSES = [
