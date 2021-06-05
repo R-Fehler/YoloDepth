@@ -1,3 +1,6 @@
+import shutil
+from PIL import Image
+from matplotlib.colors import ListedColormap
 from torch._C import dtype
 import config
 import matplotlib.pyplot as plt
@@ -8,6 +11,9 @@ import random
 import torch
 import torchvision.ops
 
+from pathlib import Path
+from scipy.interpolate import griddata
+import turbo_colormap
 from collections import Counter
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -73,8 +79,8 @@ def intersection_over_union(boxes_preds, boxes_labels, box_format="midpoint"):
     y2 = torch.min(box1_y2, box2_y2)
 
     intersection = (x2 - x1).clamp(0) * (y2 - y1).clamp(0)
-    box1_area = abs((box1_x2 - box1_x1) * (box1_y2 - box1_y1))
-    box2_area = abs((box2_x2 - box2_x1) * (box2_y2 - box2_y1))
+    box1_area = torch.abs((box1_x2 - box1_x1) * (box1_y2 - box1_y1))
+    box2_area = torch.abs((box2_x2 - box2_x1) * (box2_y2 - box2_y1))
 
     return intersection / (box1_area + box2_area - intersection + 1e-6)
 
@@ -281,7 +287,7 @@ def mean_average_precision(
     else:
         return average_precisions
 
-def plot_image(image, boxes,filename='default.jpg'):
+def plot_image(image, pred_boxes,filename='default.jpg',figure=None,target_boxes=None):
     """Plots predicted bounding boxes on the image"""
     cmap = plt.get_cmap("tab20b")
     if config.DATASET=='COCO':
@@ -297,15 +303,54 @@ def plot_image(image, boxes,filename='default.jpg'):
     height, width, _ = im.shape
 
     # Create figure and axes
-    fig, ax = plt.subplots(1)
-    # Display the image
-    ax.imshow(im)
+    if figure != None:
+        fig = figure
+    else:
+        fig = plt.figure()
+    ax1 = fig.add_subplot(2,2,1)
+    imgplot = ax1.imshow(im)
+    ax1.set_title('Prediction')
+
+    plt.rc('font', size=6) 
 
     # box[0] is x midpoint, box[2] is width
     # box[1] is y midpoint, box[3] is height
 
     # Create a Rectangle patch
-    for box in boxes:
+    for box in pred_boxes:
+        assert len(box) == 7, "box should contain class pred, confidence, x, y, width, height and depth"
+        class_pred = box[0]
+        box = box[2:]
+        upper_left_x = box[0] - box[2] / 2
+        upper_left_y = box[1] - box[3] / 2
+        rect = patches.Rectangle(
+            (upper_left_x * width, upper_left_y * height),
+            box[2] * width,
+            box[3] * height,
+            linewidth=0.7*box[1], # plot line thickness as confidence
+            edgecolor=colors[int(class_pred)],
+            facecolor="none",
+        )
+        # Add the patch to the Axes
+        ax1.add_patch(rect)
+        # ax.text(
+        #     upper_left_x * width,
+        #     upper_left_y * height,
+        #     s="c:" + str(int(class_pred)) + f"d:{box[4]:.1f}" ,
+        #     # s=f"d:{box[4]:.1f}",
+        #     color="white",
+        #     verticalalignment="top",
+        #     bbox={"color": colors[int(class_pred)], "pad": 0},
+        # )
+    
+    ax2 = fig.add_subplot(2,2,2)
+    ax2.set_title('Target')
+    imgplot = ax2.imshow(im)
+
+
+    target_boxes =[bbox for bbox in target_boxes if bbox[1]!=0]
+
+    for box in target_boxes:
         assert len(box) == 7, "box should contain class pred, confidence, x, y, width, height and depth"
         class_pred = box[0]
         box = box[2:]
@@ -320,25 +365,138 @@ def plot_image(image, boxes,filename='default.jpg'):
             facecolor="none",
         )
         # Add the patch to the Axes
-        ax.add_patch(rect)
-        plt.text(
-            upper_left_x * width,
-            upper_left_y * height,
-            s="c:" + str(int(class_pred)) + f"d:{box[4]:.1f}" if config.DS_NAME=='Ostring' else "c:" + str(int(class_pred)),
-            # s=f"d:{box[4]:.1f}",
-            color="white",
-            verticalalignment="top",
-            bbox={"color": colors[int(class_pred)], "pad": 0},
-        )
-        plt.rc('font', size=6) 
-
-    plt.savefig(filename)
+        ax2.add_patch(rect)
+        # ax.text(
+        #     upper_left_x * width,
+        #     upper_left_y * height,
+        #     s="c:" + str(int(class_pred)) + f"d:{box[4]:.1f}" ,
+        #     # s=f"d:{box[4]:.1f}",
+        #     color="white",
+        #     verticalalignment="top",
+        #     bbox={"color": colors[int(class_pred)], "pad": 0},
+        # )
+    if figure==None:
+        plt.savefig(filename,dpi=250)
 
 # TODO for plotting dense prediction or calculate dense difference between pred and label
-def spareDepthPredictionToDenseMap(depth_prediction):
+#
+        # depth_target = np.array(Image.open(depth_label_path))
+        # valid_depth_pixels = depth_target > 0
+        # # outputs two vectors (x y) of length n
+        # valid_depth_pixels_indices = np.where(valid_depth_pixels == True)
+        # # this does output a 1d vector of length n
+        # valid_depth_pixels_values = depth_target[valid_depth_pixels_indices]
+        # # this might be error
+        # grid_x, grid_y = np.mgrid[0:1536, 0:4096]
+        # # or this might be wrong: 2 xy vector for indices might need to be transposed or something
+        # dense_depth_target = griddata(valid_depth_pixels_indices,valid_depth_pixels_values,(grid_x,grid_y),method='nearest')
+        # # dense_depth_target = dense_depth_target.astype(np.dtype('int32'))
+        # savePath=os.path.join(self.depth_labels_dir,'griddata_linear',self.annotations.iloc[index, 1])
+        # Image.fromarray(dense_depth_target).save(savePath)
+        # return 0
+
+
+# TODO run this function on diff from target and prediction
+def spareDepthPredictionToDenseMap(depth_target,epoch,foldername,global_bboxes_i,global_bboxes_unshaped,figure=None,is_preds=True):
+    '''
+    ### Plots the predicted depth of each bbox at Scale S by extrapolating by nearest neighbour with griddata() \
+        to create a dense depth map of the prediction for comparision with the GT Griddata NN labels
+
+    ## Input: 
+    Prediction Tensor aus model(x)  mit shape [BS,NumOfBBoxPerCell,S,S,num_classes + conf,xywhz], config.ANCHORS in [0..1] 
+
+    ## Output:
+    np. array 
+    look at every bbox: coordinate, which pixel corresponds to the cp 
+    assign the value of the prediction to this pixel. take the bbox with highest confidence
+    or take the mean of all bboxes corresponding to the pixel value 
+    [0.1 .. 255 ] in metern.
+    '''
+
+    
+    #    cells_to bboxes returned,  converted_bboxes = torch.cat((best_class, scores, x, y, w_h,z), dim=-1).reshape(BATCH_SIZE, num_anchors, S , S, 7)
+    depth_pred_cellwise_approx=global_bboxes_unshaped[0,:,:,6] # take only the first of three anchor bbox
+    map=torch.zeros((config.IMAGE_SIZE,config.IMAGE_SIZE),dtype=np.float)
+    for box in global_bboxes_i: # iterate over bboxes in img
+        clip = lambda x, l, u: max(l, min(u, x))
+        x=clip(int(box[2] * config.IMAGE_SIZE),0,config.IMAGE_SIZE-1)
+        y=clip(int(box[3] * config.IMAGE_SIZE),0,config.IMAGE_SIZE-1)
+        map[x,y]=box[6].clamp(0.1,255) # assign depth value of bbox
+    img=map.detach().cpu()
+    # TODO set cmap to turbo or jet
+    # cmap=plt.get_cmap("jet")
+    img=np.array(img)
+
+    depth_pred_sparse = img
+    valid_depth_pixels = depth_pred_sparse > 0
+    # outputs two vectors (x y) of length n
+    valid_depth_pixels_indices = np.where(valid_depth_pixels == True)
+
+    turbocmap=ListedColormap(turbo_colormap.turbo_colormap_data)
+
+    if(len(valid_depth_pixels_indices[0])>0):
+        # this does output a 1d vector of length n
+        valid_depth_pixels_values = depth_pred_sparse[valid_depth_pixels_indices]
+        # this might be error
+        grid_x, grid_y = np.mgrid[0:416, 0:416]
+        # or this might be wrong: 2 xy vector for indices might need to be transposed or something
+        dense_depth_pred = griddata(valid_depth_pixels_indices,valid_depth_pixels_values,(grid_x,grid_y),method='nearest')
+        # dense_depth_target = dense_depth_target.astype(np.dtype('int32'))
+        filename=f'{foldername}/depth_scale?_ep{epoch}.png'
+        if figure!=None:
+            fig=figure
+        else:
+            fig = plt.figure(dpi=150)
+            
+        if(depth_target.dim()>1):
+            ax2 = fig.add_subplot(2, 2, 4)
+            imgplot2 = ax2.imshow(depth_target,cmap=turbocmap,vmin=0,vmax=255)
+            ax2.set_title('Target')
+            fig.subplots_adjust(right=0.8)
+            cbar_ax = fig.add_axes([0.85, 0.15, 0.05, 0.7])
+            fig.colorbar(imgplot2,cax=cbar_ax)
+        else:
+            ax2 = fig.add_subplot(2,2,4)
+            ax2.set_title('No 2D Depth Target available')
+        ax1 = fig.add_subplot(2, 2, 3)
+        imgplot1 = ax1.imshow(dense_depth_pred,cmap=turbocmap,vmin=0,vmax=255)
+        ax1.set_title('Prediction')
+
+        # used for debugging
+        # ax3 = fig.add_subplot(2,2,3)
+        # ax3.set_title('cellwise Depth Prediction')
+        # imgplot = ax3.imshow(depth_pred_cellwise.T.cpu().numpy(),cmap=turbocmap)
+        # plt.colorbar(orientation='horizontal')
+
+        if(figure==None):
+            plt.savefig(filename)
+            plt.clf()
+
+def plotDepthPrediction(densePredictionArray):
+    '''
+    Input: Numpy Array
+    Output: no output, save img to disk 
+    '''
     pass
 
+def plotDifferencePredictionLabel(DepthPredictionArray, TargetArray):
+    '''
+    Input: Prediction, Label
+    Output: plot colourcoded difference, save img, with colormap from 0.1 to 255
+    '''
 
+def evaluateDepthPrediction(prediction, target):
+    '''
+    Input: Depth Prediction, target
+    Output: metric that tells an interpretable value of miss prediction like accuracy etc
+    '''
+    pass
+
+def evaluateDepthPredictionObjectsOnly(prediction, target):
+    '''
+    Input: prediction, target
+    Output: metric taking only the objects of the target into account. similiar to the loss that only accounts for objects.
+    '''
 def get_evaluation_bboxes(
     loader,
     model,
@@ -499,6 +657,8 @@ def save_checkpoint(model, optimizer, filename="my_checkpoint.pth.tar"):
 
 def load_checkpoint(checkpoint_file, model, optimizer, lr):
     print("=> Loading checkpoint")
+    shutil.copyfile(checkpoint_file,'pre_loading_backup_'+checkpoint_file, follow_symlinks=True)
+
     checkpoint = torch.load(checkpoint_file, map_location=config.DEVICE)
     model.load_state_dict(checkpoint["state_dict"])
     optimizer.load_state_dict(checkpoint["optimizer"])
@@ -510,6 +670,7 @@ def load_checkpoint(checkpoint_file, model, optimizer, lr):
 
 def load_checkpoint_transfer(checkpoint_file, model, optimizer, lr):
     print("=> Loading checkpoint")
+    shutil.copyfile(checkpoint_file,'pre_loading_backup_'+checkpoint_file, follow_symlinks=True)
     pretrained_dict = torch.load(checkpoint_file, map_location=config.DEVICE)
     # model_dict = model.state_dict()
     pretrained_dict_state = pretrained_dict["state_dict"]
@@ -585,29 +746,76 @@ def get_loaders(train_csv_path, test_csv_path):
 
     return train_loader, test_loader, train_eval_loader
 
-def plot_couple_examples(model, loader, thresh, iou_thresh, anchors,epochNo=0):
+def plot_couple_examples(model, loader, conf_threshold, iou_threshold, anchors,noOfExamples,epochNo=0):
+    Path(config.TRAINING_EXAMPLES_PLOT_DIR_DEPTH).mkdir(parents=True,exist_ok=True)
     model.eval()
-    x, y, depth_target = next(iter(loader))
+    x, labels, depth_target = next(iter(loader))
     x = x.to(config.DEVICE,dtype=torch.float)
+    all_pred_boxes = []
+    all_true_boxes = []
     with torch.no_grad():
-        out = model(x)
-        bboxes = [[] for _ in range(x.shape[0])]
+        predictions = model(x)
+        fig=plt.figure()
+        batch_size = x.shape[0]
+        bboxes = [[] for _ in range(batch_size)]
         for i in range(3):
-            batch_size, A, S, _, _ = out[i].shape
-            anchor = anchors[i]
+            S = predictions[i].shape[2]
+            scaled_anchor_at_S = anchors[i]
+            
+            global_bboxes_i = cells_to_bboxes(predictions[i].detach().clone(),scaled_anchor_at_S,S,is_preds=True) # shape: 
+            global_bboxes_unshaped_i = cells_to_bboxes(predictions[i].detach().clone(),scaled_anchor_at_S,S,is_preds=True,reshape=False) 
+
             boxes_scale_i = cells_to_bboxes(
-                out[i], anchor, S=S, is_preds=True
+                predictions[i], scaled_anchor_at_S, S=S, is_preds=True
             ).tolist()
             for idx, (box) in enumerate(boxes_scale_i):
                 bboxes[idx] += box
 
-        model.train()
-    # TODO return to range(BS)
-    for i in range(batch_size//2):
-        nms_boxes = nms_torch(
-            bboxes[i], iou_threshold=iou_thresh, threshold=thresh
-        )
-        plot_image(x[i].permute(1,2,0).detach().cpu(), nms_boxes,filename=f'{config.TRAINING_EXAMPLES_PLOT_DIR}/{epochNo}_{i}.jpg')
+        # we just want one bbox for each label, not one for each scale
+        
+        true_bboxes = cells_to_bboxes(
+            labels[2], anchors[2], S=predictions[2].shape[2], is_preds=False
+        ).tolist()
+        for idx in range(min(noOfExamples,batch_size)):
+            nms_boxes = nms_torch(
+                bboxes[idx],
+                iou_threshold=iou_threshold,
+                threshold=conf_threshold,
+                # box_format=box_format,
+            )
+
+            # for nms_box in nms_boxes:
+            #     all_pred_boxes.append(nms_box)
+
+            # for box in true_bboxes[idx]:
+            #     if box[1] > threshold:
+            #         all_true_boxes.append(box)
+            
+        
+        
+        
+        
+        
+        # pred_bboxes = [[] for _ in range(x.shape[0])]
+        # for i in range(3):
+        #     batch_size, A, S, _, _ = predictions[i].shape
+        #     anchor = anchors[i]
+        #     boxes_scale_i = cells_to_bboxes(
+        #         predictions[i], anchor, S=S, is_preds=True
+        #     ).tolist()
+        #     for idx, (box) in enumerate(boxes_scale_i):
+        #         pred_bboxes[idx] += box
+    # for i in range(batch_size//2):
+        # nms_boxes = nms_torch(
+        #     pred_bboxes[i], iou_threshold=iou_thresh, threshold=thresh
+        # ) 
+            fn=f'{config.TRAINING_EXAMPLES_PLOT_DIR}/{epochNo}_{idx}.png'
+            spareDepthPredictionToDenseMap(depth_target[idx],epochNo,config.TRAINING_EXAMPLES_PLOT_DIR_DEPTH,global_bboxes_i[idx],global_bboxes_unshaped_i[idx],fig)
+
+            plot_image(x[idx].permute(1,2,0).detach().cpu(), nms_boxes,filename=fn,figure=fig,target_boxes=true_bboxes[idx])
+            plt.savefig(fn,dpi=300)
+            plt.clf()
+    model.train()
 
 
 
