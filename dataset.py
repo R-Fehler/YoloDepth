@@ -2,6 +2,7 @@
 Creates a Pytorch dataset to load the Pascal VOC & MS COCO datasets
 """
 
+from itertools import repeat
 from albumentations import augmentations
 from numpy.lib.type_check import _imag_dispatcher
 from torch._C import dtype
@@ -15,6 +16,8 @@ import matplotlib.pyplot as plt
 import scipy.ndimage
 from scipy.interpolate import griddata
 from threading import Thread
+
+from multiprocessing.pool import ThreadPool
 
 import tqdm
 
@@ -41,6 +44,7 @@ class YOLODataset(Dataset):
         S=[13, 26, 52],
         C=20,
         transform=None,
+        cache_images=False,
     ):
         self.annotations = pd.read_csv(csv_file)
         self.annotations_depth = pd.read_csv(csv_file,delimiter=',')
@@ -55,11 +59,31 @@ class YOLODataset(Dataset):
         self.num_anchors_per_scale = self.num_anchors // 3
         self.C = C
         self.ignore_iou_thresh = 0.5
+        self.n = len(self.annotations)
+        self.imgs = [None] * self.n
+        self.targets = [None] * self.n
+        self.depth_targets = [None] * self.n
+        self.cached=False
+        # if cache_images:
+            # n = self.n
+            # gb = 0  # Gigabytes of cached images
+            # results = ThreadPool(8).imap(lambda x: load_targets(*x), zip(repeat(self), range(n)))  # 8 threads
+            # pbar = tqdm.tqdm(enumerate(results), total=n)
+            # for i, x in pbar:
+            #     self.imgs[i], self.targets[i], self.depth_targets[i] = x  # img, hw_original, hw_resized = load_image(self, i)
+            #     gb += self.imgs[i].nbytes
+            #     # gb += self.targets[i].nbytes
+            #     # gb += self.depth_targets[i].nbytes
+            #     pbar.desc = f'Caching targets and imgs ca ({gb / 1E9:.1f}GB)'
+            # pbar.close()
+            # self.cached = True
 
     def __len__(self):
         return len(self.annotations)
         
     def __getitem__(self,index):
+        if self.cached:
+            return self.imgs[index],self.targets[index],self.depth_targets[index]
         return self.get_complete_targets(index)
 
     # target nicht tiefe ziel generieren.... nicht hier sondern im Loss
@@ -74,8 +98,13 @@ class YOLODataset(Dataset):
             img_path = os.path.join(self.img_dir, self.annotations.iloc[index, 0])
             depth_label_path = os.path.join(self.depth_labels_dir, self.annotations.iloc[index, 1])
             dense_depth_target = np.array(Image.open(depth_label_path).resize((416,416)),dtype=np.dtype('float'))/255.0
-        else:
+        elif config.DS_NAME=='Mapillary':
             label_path = os.path.join(self.label_dir, self.annotations.iloc[index, 1])
+            bboxes = np.roll(np.loadtxt(fname=label_path, delimiter=" ", ndmin=2), 4, axis=1).tolist()
+            img_path = os.path.join(self.img_dir, self.annotations.iloc[index, 0])
+            dense_depth_target = 0 
+        else:
+            label_path = os.path.join(self.label_dir, self.annotations.iloc[index, 2])
             bboxes = np.roll(np.loadtxt(fname=label_path, delimiter=" ", ndmin=2), 4, axis=1).tolist()
             img_path = os.path.join(self.img_dir, self.annotations.iloc[index, 0])
             dense_depth_target = 0 
@@ -380,3 +409,9 @@ def test():
 
 if __name__ == "__main__":
     saveGridData()
+
+
+def load_targets(self, index):
+    # loads 1 image from dataset, returns img, original hw, resized hw
+    img,targets,depth_target = self[index]
+    return img,targets,depth_target
