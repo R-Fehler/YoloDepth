@@ -4,6 +4,7 @@ Creates a Pytorch dataset to load the Pascal VOC & MS COCO datasets
 
 from itertools import repeat
 from albumentations import augmentations
+from numpy.core.fromnumeric import ndim
 from numpy.lib.type_check import _imag_dispatcher
 from torch._C import dtype
 import config
@@ -19,7 +20,12 @@ from threading import Thread
 
 from multiprocessing.pool import ThreadPool
 
+import cv2 as cv
+
 import tqdm
+import fileinput
+import glob
+from sklearn.cluster import KMeans
 
 from PIL import Image, ImageFile
 from torch.utils.data import Dataset, DataLoader
@@ -86,15 +92,31 @@ class YOLODataset(Dataset):
             return self.imgs[index],self.targets[index],self.depth_targets[index]
         return self.get_complete_targets(index)
 
+    def getLabels(self,index):
+        label_path = os.path.join(self.label_dir, self.annotations.iloc[index, 2])
+
+        bboxes = np.loadtxt(fname=label_path,delimiter=' ',ndmin=2, usecols=(0,1,2,3,4,5))
+
     # target nicht tiefe ziel generieren.... nicht hier sondern im Loss
     # ausser bei mapping werten.
     #im csv file: img,depthlabel,bboxes
 
     def get_complete_targets(self, index):
         # image = np.array(Image.open(img_path).convert("RGB"))
+        # Load both bbox labels and 2D Depth Maps
         if(self.depth_labels_dir != None):
             label_path = os.path.join(self.label_dir, self.annotations.iloc[index, 2])
-            bboxes = np.roll(np.loadtxt(fname=label_path, delimiter=" ", ndmin=2), 4, axis=1).tolist()
+            bboxes = np.loadtxt(fname=label_path, delimiter=" ", ndmin=2)
+            if len(bboxes)==0:
+                bboxes=np.array([[0,0,0,0,0,0],])
+            
+            if bboxes.shape[1]>5:
+                bboxes = bboxes[:,0:6]
+                bboxes = np.roll(bboxes, 5, axis=1).tolist()
+            elif bboxes.shape[1]==5:
+                bboxes = np.roll(bboxes, 4, axis=1).tolist()
+            else: raise Exception(f'labelfile {label_path} misses entry, less than 5')
+
             img_path = os.path.join(self.img_dir, self.annotations.iloc[index, 0])
             depth_label_path = os.path.join(self.depth_labels_dir, self.annotations.iloc[index, 1])
             dense_depth_target = np.array(Image.open(depth_label_path).resize((416,416)),dtype=np.dtype('float'))/255.0
@@ -138,7 +160,16 @@ class YOLODataset(Dataset):
         for box in bboxes:
             iou_anchors = iou(torch.tensor(box[2:4]), self.anchors)
             anchor_indices = iou_anchors.argsort(descending=True, dim=0) # sort anchors by IoU with Target Bbox
-            x, y, width, height, class_label = box
+            if len(box)==5:
+                x, y, width, height, class_label = box
+            elif len(box)==6:
+                x, y, width, height, depth, class_label = box
+            x=clamp(x,0,0.999999999)
+            y=clamp(y,0,0.999999999)
+            width=clamp(width,0,0.999999999)
+            height=clamp(height,0,0.999999999)
+            
+
             has_anchor = [False] * 3  # each scale should have one anchor
             for anchor_idx in anchor_indices:
                 scale_idx = anchor_idx // self.num_anchors_per_scale
@@ -158,8 +189,8 @@ class YOLODataset(Dataset):
                     )
                     # TODO this value is only viable when there is a mapped object
                     # Mapping output in den label txt files das mit rausschreibt
-                    if (len(box)==6):
-                        z = box[5]
+                    if (len(box)==6 and depth>0):
+                        z = depth
                     # config einstellbar machen ob ich parameter target oder depthmap nehme
                     else:
                         z = 0
@@ -192,99 +223,24 @@ class YOLODataset(Dataset):
         # or this might be wrong: 2 xy vector for indices might need to be transposed or something
         dense_depth_target = griddata(valid_depth_pixels_indices,valid_depth_pixels_values,(grid_x,grid_y),method='nearest')
         # dense_depth_target = dense_depth_target.astype(np.dtype('int32'))
-        savePath=os.path.join(self.depth_labels_dir,'griddata_linear',self.annotations.iloc[index, 1])
+        # savePath=os.path.join(self.depth_labels_dir,'griddata_nearest_withSky',self.annotations.iloc[index, 1])
+        # Image.fromarray(dense_depth_target).save(savePath)
+        return depth_target, dense_depth_target
+
+    def prepare_griddata_depth_maps_without_sky(self,index):
+        depth_target, dense_depth_target = self.prepare_griddata_depth_maps(index)
+        depth_target_bw_inv=np.ones(depth_target.shape)
+        depth_target_bw_inv[np.where(depth_target>0)]=0
+        depth_target_bw_inv = depth_target_bw_inv.astype(np.uint8)
+
+        dist = cv.distanceTransform(depth_target_bw_inv,cv.DIST_L2,cv.DIST_MASK_3)
+
+        dense_depth_target[np.where(dist>config.DIST_THRESHOLD)] = 0
+        savePath=os.path.join(self.depth_labels_dir,'griddata_nearest_wo_sky',self.annotations.iloc[index, 1])
         Image.fromarray(dense_depth_target).save(savePath)
         return 0
 
-class DepthDataset(Dataset):
-    def __init__(
-        self,
-        csv_file,
-        img_dir,
-        depth_labels_dir,
-        # anchors,
-        image_size=416, # kitti height , width will be compressed
-        S=[13,26,52],
-        transform=None,
-        ):
-        self.annotations = pd.read_csv(csv_file,delimiter=',')
-        self.img_dir = img_dir
-        self.depth_labels_dir = depth_labels_dir
-        self.image_size=image_size
-        self.transform = transform
-        self.S = S
-        # self.anchors = torch.tensor(anchors[0] + anchors[1] +anchors[2])
-        # self.num_anchors = self.anchors.shape[0]
-        # self.num_anchors_per_scale = self.num_anchors // 3
-        # self.ignore_iou_thresh = 0.5
-    def __len__(self):
-        return len(self.annotations)
 
-    def __getitem__(self, index):
-        label_path = os.path.join(self.depth_labels_dir, self.annotations.iloc[index, 1])
-        # bboxes = np.roll(np.loadtxt(fname=label_path, delimiter=" ", ndmin=2), 4, axis=1).tolist() # [class, x,y,w,h] roll to [x,y,w,h,class]
-        depth_target = np.array(Image.open(label_path).resize((416,416)))/255.0
-        img_path = os.path.join(self.img_dir, self.annotations.iloc[index, 0])
-        image = np.array(Image.open(img_path).convert("RGB").resize((416,416)),dtype=np.dtype('float'))/255.0
-        if self.transform:
-            image = self.transform(image)
-            depth_target = self.transform(depth_target)
-
-        assert image.shape[0] == depth_target.shape[0], "height of depth and img different" 
-        assert image.shape[1] == depth_target.shape[1],"witdh of depth and img different"
-        targets = [torch.zeros((S,S,1)) for S in self.S] # [prob_obj,x,y,w,h,class] --> erstmal nur depth
-        # targets = [torch.zeros((self.num_anchors_per_scale,S,S,6)) for S in self.S]  # [prob_obj,x,y,w,h,class] --> erstmal nur depth
-        h = image.shape[0]
-        w = image.shape[1]
-        ch = image.shape[2]
-        # assign the depth value of the center of each grid cell from depth_target img to target tensor
-        # nn_indices = np.zeros(((np.ndim(depth_target),) + depth_target.shape), dtype=np.int32)
-
-        # scipy.ndimage.morphology.distance_transform_edt(
-        # depth_target==0, return_distances=False, return_indices=True,indices=nn_indices)
-        # for scale_idx,S in enumerate(self.S):
-        #     for i in range(S):
-        #         for j in range(S):
-        #             dt_avg = 0.
-        #             n=0
-        #             k=1
-        #             for x in range (-k,k+1):
-        #                 for y in range(-k,k+1):
-        #                     nn_x=nn_indices[0][int(h*(1+i*2)/2//S)+x][int(w*(1+j*2)/2//S)+y]
-        #                     nn_y=nn_indices[1][int(h*(1+i*2)/2//S)+x][int(w*(1+j*2)/2//S)+y]
-        #                     # dt = depth_target[int(h*(1+i*2)/2//S)+x, 
-        #                     # int(w*(1+j*2)/2//S)+y] 
-        #                     dt = depth_target[nn_x,nn_y]
-        #                     if dt>0.:
-        #                         n += 1
-        #                         dt_avg += dt
-        #             if n>0:
-        #                 dt_avg = dt_avg/n
-                        
-        #             else: 
-        #                 dt_avg = 0.
-        #             if(dt_avg>0.):
-        #                 targets[scale_idx][i, j, 0] = dt_avg
-
-            #                     for scale_idx,S in enumerate(self.S):
-            # for i in range(S):
-            #     for j in range(S):
-            #         dt_avg = 0.
-            #         n=0
-            #         for x in range (-1,1):
-            #             for y in range(-1,1):
-            #                 dt = depth_target[int(h*(1+i*2)/2//S)+x, int(w*(1+j*2)/2//S)+y] 
-            #                 if dt>0.:
-            #                     n += 1
-            #                     dt_avg += dt
-            #         if n>0:
-            #             dt_avg = dt_avg/n
-            #         else: 
-            #             dt_avg = 0.
-            #         if(dt_avg>0.):
-            #             targets[scale_idx][i, j, 0] = dt_avg
-        image = np.transpose(image,(2,0,1))
-        return image, tuple(targets), depth_target
 
 def clamp(n, smallest, largest): return max(smallest, min(n, largest))
 def testDepth():
@@ -332,11 +288,22 @@ def saveGridData():
         anchors=config.ANCHORS,
         transform=None,
     )
-    loader = DataLoader(dataset=dataset,batch_size=48,shuffle=False, num_workers=0)
+    loader = DataLoader(dataset=dataset,batch_size=48,shuffle=False, num_workers=128)
     for _ in tqdm.tqdm(loader):
         pass
         
+def loadAllTextFilesIntoArray(filename_glob_pattern):
+    return np.loadtxt(fileinput.input(sorted(glob.glob(filename_glob_pattern))),delimiter=' ',ndmin=2, usecols=(0,1,2,3,4,5))
 
+def loadAllTextFilesIntoList(filename_glob_pattern):
+    return [np.loadtxt(fn,delimiter=' ',ndmin=2,usecols=range(6)) for fn in sorted(glob.glob(filename_glob_pattern))]
+
+def clusterDataSet():
+    bboxes=loadAllTextFilesIntoArray('/home/fehler/PE_TOOL_RUNS_KNECHT5_LOCAL/ostring_seamseg_for_yoloDepth_CameraCoords/yoloLabels/*.txt')
+    # TODO distance metric: d(box, centroid) = 1 − IOU(box, centroid)
+    kmeans_anchors = KMeans(n_clusters=9).fit(bboxes[:,3:5])
+    kmeans_depth = KMeans(n_clusters=9).fit(bboxes[:,5:6])
+    return kmeans_anchors,kmeans_depth
 def saveImg(x,fp):
     arr = x.mul(255).add_(0.5).clamp_(0, 255).squeeze().to('cpu', torch.uint8).numpy()
     im = Image.fromarray(arr)
@@ -375,23 +342,38 @@ def saveImgAndDenseDepthLabel(x,depthImg,fp):
     plt.clf()
 def test():
     anchors = config.ANCHORS
-
+    scaled_anchors = (
+        torch.tensor(config.ANCHORS)
+        * torch.tensor(config.S).unsqueeze(1).unsqueeze(1).repeat(1, 3, 2)
+    ).to(config.DEVICE)
     transform = config.test_transforms
 
-    dataset = YOLODataset(
-        "OstringDepthDataset/OstringDataSet.csv",
-        "OstringDepthDataset/imgs/",
-        "OstringDepthDataset/bbox_labels/",
-        "OstringDepthDataset/depth_labels/",
-        S=[13, 26, 52],
-        anchors=anchors,
+    train_dataset = YOLODataset(
+        config.DATASET_TRAIN_CSV,
+        config.IMAGE_DIR,
+        config.BBOX_LABEL_DIR,
+        config.DEPTH_NN_MAP_LABEL,
+        S=config.S,
+        anchors=config.ANCHORS,
         transform=None,
+        cache_images=True
+    )
+    test_dataset = YOLODataset(
+        config.DATASET_TEST_CSV,
+        config.IMAGE_DIR,
+        config.BBOX_LABEL_DIR,
+        config.DEPTH_NN_MAP_LABEL,
+        S=config.S,
+        anchors=config.ANCHORS,
+        transform=None,
+        cache_images=True
+
     )
     S = [13, 26, 52]
     scaled_anchors = torch.tensor(anchors) / (
         1 / torch.tensor(S).unsqueeze(1).unsqueeze(1).repeat(1, 3, 2)
     )
-    loader = DataLoader(dataset=dataset, batch_size=1, shuffle=True)
+    loader = DataLoader(dataset=train_dataset, batch_size=1, shuffle=False)
     for index , (x, y, depthtarget) in enumerate(loader):
         boxes = []
 
@@ -403,11 +385,12 @@ def test():
                 y[i], is_preds=False, S=y[i].shape[2], anchors=anchor
             ).tolist()[0]
         boxes = nms(boxes, iou_threshold=1, threshold=0.7, box_format="midpoint")
-        print(boxes)
-        plot_image(x[0].to("cpu"), boxes,filename=f'datasetTest_{index}.png')
+        # print(boxes)
+        plot_image(x[0].permute(1,2,0).detach().cpu(), pred_boxes=boxes,filename=f'datasetTest_{index}.png',target_boxes=boxes)
 
 
 if __name__ == "__main__":
+    # test()
     saveGridData()
 
 
