@@ -3,7 +3,6 @@ Implementation of YOLOv3 architecture
 """
 
 from torch.utils.data.dataloader import DataLoader
-from dataset import DepthDataset
 from config import IMAGE_SIZE
 import torch
 import torch.nn as nn
@@ -84,22 +83,23 @@ class ResidualBlock(nn.Module):
 
         return x
 
-
+# TODO is the CNN LeakyReLU the wrong activation function for obj depth pred?
 class ScalePrediction(nn.Module):
-    def __init__(self, in_channels, num_classes):
+    def __init__(self, in_channels, num_classes,depth_bins=1):
         super().__init__()
         self.pred = nn.Sequential(
             CNNBlock(in_channels, 2 * in_channels, kernel_size=3, padding=1),
             CNNBlock(
-                2 * in_channels, (num_classes + 5 + 1) * 3, bn_act=False, kernel_size=1  # +1 is depth value of bbox
+                2 * in_channels, (num_classes + 5 + depth_bins) * 3, bn_act=False, kernel_size=1  # +1 is depth value of bbox
             ),
         )
         self.num_classes = num_classes
+        self.depth_bins = depth_bins
 
     def forward(self, x):
         return (
             self.pred(x)
-            .reshape(x.shape[0], 3, self.num_classes + 5 + 1, x.shape[2], x.shape[3])
+            .reshape(x.shape[0], 3, self.num_classes + 5 + self.depth_bins, x.shape[2], x.shape[3])
             .permute(0, 1, 3, 4, 2)
         )
 
@@ -122,9 +122,10 @@ class DepthPrediction(nn.Module):
 
 
 class YOLOv3(nn.Module):
-    def __init__(self, in_channels=3, num_classes=80):
+    def __init__(self, in_channels=3, num_classes=80,num_depth_bins=1):
         super().__init__()
         self.num_classes = num_classes
+        self.num_depth_bins=num_depth_bins
         self.in_channels = in_channels
         self.layers = self._create_conv_layers()
 
@@ -135,6 +136,7 @@ class YOLOv3(nn.Module):
             if isinstance(layer, ScalePrediction):
                 outputs.append(layer(x))
                 continue
+            # Output the Tensor from Last Fully/ CNN Outputting the Depth Estimation from Detection Tensor. 
             if isinstance(layer, DepthPrediction):
                 outputs.append(layer(x))
                 continue  
@@ -177,7 +179,7 @@ class YOLOv3(nn.Module):
                     layers += [
                         ResidualBlock(in_channels, use_residual=False, num_repeats=1),
                         CNNBlock(in_channels, in_channels // 2, kernel_size=1),
-                        ScalePrediction(in_channels // 2, num_classes=self.num_classes),
+                        ScalePrediction(in_channels // 2, num_classes=self.num_classes,depth_bins=self.num_depth_bins),
                     ]
                     in_channels = in_channels // 2
 
@@ -207,11 +209,12 @@ if __name__ == "__main__":
     # assert model(x)[2].shape == (2, 3, IMAGE_SIZE//8, IMAGE_SIZE//8, num_classes + 5)
     # print("Success!")
     num_classes = 20
+    num_depth_bin = 20
     IMAGE_SIZE = 416
-    model = YOLOv3(num_classes=num_classes)
+    model = YOLOv3(num_classes=num_classes,num_depth_bins=num_depth_bin)
     x = torch.randn((2, 3, IMAGE_SIZE, IMAGE_SIZE))
     out = model(x)
-    assert out[0].shape == (2, 3, IMAGE_SIZE//32, IMAGE_SIZE//32, num_classes + 5 + 1)
-    assert out[1].shape == (2, 3, IMAGE_SIZE//16, IMAGE_SIZE//16,  num_classes + 5 + 1)
-    assert out[2].shape == (2, 3, IMAGE_SIZE//8, IMAGE_SIZE//8,  num_classes + 5 + 1)
+    assert out[0].shape == (2, 3, IMAGE_SIZE//32, IMAGE_SIZE//32, num_classes + 5 + num_depth_bin)
+    assert out[1].shape == (2, 3, IMAGE_SIZE//16, IMAGE_SIZE//16,  num_classes + 5 + num_depth_bin)
+    assert out[2].shape == (2, 3, IMAGE_SIZE//8, IMAGE_SIZE//8,  num_classes + 5 + num_depth_bin)
     print("Success!")
