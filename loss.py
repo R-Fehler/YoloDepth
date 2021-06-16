@@ -6,7 +6,7 @@ from torch._C import device, dtype
 from torch.utils.data import DataLoader, Dataset
 
 import config
-from dataset import DepthDataset, YOLODataset
+from dataset import YOLODataset
 from model import YOLOv3
 from Timer import Timer
 from utils import cells_to_bboxes, intersection_over_union
@@ -21,11 +21,19 @@ class YoloLoss(nn.Module):
         self.sigmoid = nn.Sigmoid()
 
         # Constants signifying how much to pay for each respective part of the loss
+        # self.lambda_class = 0
         self.lambda_class = 1
         self.lambda_noobj = 10
-        self.lambda_obj = 1
+        self.lambda_obj =  1
         self.lambda_box = 10
+        # self.lambda_box = 0
         self.lambda_depth = 1
+        self.lambda_noobj_depth = 1
+        # self.lambda_class = 0
+        # self.lambda_noobj = 0
+        # self.lambda_obj   = 0
+        # self.lambda_box   = 0
+        # self.lambda_depth =  1
 
     def forward(self, predictions, target, depth_target, anchors, scale_S, mask=None, interpolate=True):
         anchors_const = anchors
@@ -72,18 +80,51 @@ class YoloLoss(nn.Module):
         # ================== #
         #   FOR DEPTH LOSS   #
         # ================== #
+        noObj_depth_loss = torch.tensor(0.0, device=config.DEVICE)
+        obj_depth_loss = torch.tensor(0.0, device=config.DEVICE)
 
-        depth_loss = torch.tensor(0.0, device=config.DEVICE)
         if depth_target.dim() > 1:
+            obj_depth_target = target[...,5][obj]
+            # check if obj depth target is positive
+        # elif obj_depth_target > 0:
+            # returns converted_bboxes = torch.cat((best_class, scores, x, y, w_h,z), dim=-1).reshape(BATCH_SIZE, num_anchors, S , S, 7)
+            pred_depths =predictions[...,5][obj]
+            pred_depths = pred_depths.clamp(1, 255)
+            obj_depth_target = obj_depth_target.clamp(1, 255)
+            log_obj_depth_target = torch.log(obj_depth_target)
+            log_depth_pred = torch.log(pred_depths)
+            dd = pred_depths - obj_depth_target
+            g = log_depth_pred - log_obj_depth_target
+            assert g.dim() == 1, 'depth loss g not dimension == 1'
+            # g = g.view((g.shape[0], -1))
+            log_obj_depth_variance = torch.var(g)
+            obj_depth_variance = torch.var(dd)
+            log_obj_depth_mean = torch.mean(g)
+            obj_depth_mean = torch.mean(dd)
+            Dg = log_obj_depth_variance +  0.15 * torch.pow(log_obj_depth_mean, 2)
+            obj_depth_loss = torch.sqrt(Dg) # was 10 * 
+            # depth_loss = self.mse(log_depth_pred,log_depth_target) # was 10 * 
+            # depth_loss = depth_loss.mean()  # SCALAR
+
+
+        if depth_target.dim() > 1 and config.USE_2D_DEPTH_MAP:
+        # if depth_target.dim() > 1:
+            
+                    # ================== =======================================================================#
+                    #   ACHTUNG !!! func cells_to_bboxes ändert reihenfolge von prediction tensor schichten!    #
+                    # ================== =======================================================================#
+
+
+            # returns converted_bboxes = torch.cat((best_class, scores, x, y, w_h,z), dim=-1).reshape(BATCH_SIZE, num_anchors, S , S, 7)
             bboxes = cells_to_bboxes(
                 predictions, anchors_const, scale_S, is_preds=True, reshape=False).to(config.DEVICE)
-            pred_centers = bboxes[:, :, :, :, 1:3] * config.IMAGE_SIZE
+            pred_centers = bboxes[:, :, :, :, 2:4] * config.IMAGE_SIZE
             pred_centers = pred_centers.clamp(0, config.IMAGE_SIZE-1)
             pred_depths = bboxes[:, :, :, :, 6]
-            pred_depths = pred_depths.clamp(0.1, 255)
-            depth_target = depth_target.clamp(0.1, 255)
+            pred_depths = pred_depths.clamp(1, 255)
+            depth_target = depth_target.clamp(1, 255)
             # depth target is bs x 416 x 416
-            log_depth_target = torch.log(depth_target)
+            log_obj_depth_target = torch.log(depth_target)
             # depth_pred is bs x 3 x 13 x 13
             log_depth_pred = torch.log(pred_depths)
             # shape is bs x 3 x 13 x 13 x 2
@@ -102,13 +143,28 @@ class YoloLoss(nn.Module):
                 # indices.shape
                 # torch.Size([1, 3, 52, 52, 2])
                 # ========================================
-                target_depths_selected_with_pred_centers[b, :, :, :] = log_depth_target[b][indices[b, :, :, :, 0], indices[b, :, :, :, 1]]
+                target_depths_selected_with_pred_centers[b, :, :, :] = log_obj_depth_target[b][indices[b, :, :, :, 0], indices[b, :, :, :, 1]]
+            validDepthIndices = target_depths_selected_with_pred_centers > 0 # in log space
+            validDepthAndNoObjIndices = torch.logical_and(noobj, validDepthIndices)
+            g = target_depths_selected_with_pred_centers[validDepthAndNoObjIndices] - log_depth_pred[validDepthAndNoObjIndices]
+            assert g.dim() == 1, 'depth loss g not dimension == 1'
 
-            g = target_depths_selected_with_pred_centers - log_depth_pred
-            g = g.view((g.shape[0], -1))
-            Dg = torch.var(g, dim=1) + 0.15 * torch.pow(torch.mean(g, dim=1), 2)
-            depth_loss = 10 * torch.sqrt(Dg)
-            depth_loss = depth_loss.mean()  # SCALAR
+            Dg = torch.var(g) + 0.15 * torch.pow(torch.mean(g), 2)
+            # g = target_depths_selected_with_pred_centers - log_depth_pred
+            # g = g.view((g.shape[0], -1))
+            # Dg = torch.var(g, dim=1) + 0.15 * torch.pow(torch.mean(g, dim=1), 2)
+            noObj_depth_loss = torch.sqrt(Dg) # was 10 * 
+            noObj_depth_loss = noObj_depth_loss.mean()  # SCALAR
+            
+
+
+        ################## BINNED DEPTH LOSS ##############################
+
+        #     depth_loss = self.entropy(
+        #     (predictions[..., 6:][obj]), (target[..., 6][obj].long()),
+        # )
+
+
 
         # print("__________________________________")
         # print(self.lambda_box * box_loss)
@@ -123,7 +179,12 @@ class YoloLoss(nn.Module):
             self.lambda_obj * object_loss,
             self.lambda_noobj * no_object_loss,
             self.lambda_class * class_loss,
-            self.lambda_depth * depth_loss
+            self.lambda_depth * obj_depth_loss,
+            self.lambda_noobj_depth * noObj_depth_loss,
+            {'logvar':log_obj_depth_variance,
+            'var':obj_depth_variance,
+            'logmean':log_obj_depth_mean,
+            'mean':obj_depth_mean} ,
         )
 
 
@@ -160,14 +221,15 @@ if __name__ == '__main__':
         * torch.tensor(config.S).unsqueeze(1).unsqueeze(1).repeat(1, 3, 2)
     ).to(config.DEVICE)
     dataset = YOLODataset(
-        "OstringDepthDataset/OstringDataSet.csv",
-        "OstringDepthDataset/imgs/",
-        "OstringDepthDataset/bbox_labels/",
-        "OstringDepthDataset/depth_labels/",
-        S=[13, 26, 52],
-        anchors=config.ANCHORS,
-        transform=None,
-    )
+            config.DATASET_TRAIN_CSV,
+            config.IMAGE_DIR,
+            config.BBOX_LABEL_DIR,
+            config.DEPTH_NN_MAP_LABEL,
+            S=config.S,
+            anchors=config.ANCHORS,
+            transform=None,
+            cache_images=True
+        )
     loader = DataLoader(dataset=dataset, batch_size=10)
     model = YOLOv3(num_classes=config.NUM_CLASSES).to(config.DEVICE)
     loss_fn = YoloLoss()
@@ -183,5 +245,5 @@ if __name__ == '__main__':
         with torch.no_grad():
             out = model(x)
         with Timer('loss calc'):
-            l_dense = loss_fn(out[2], y2, depth_target, scaled_anchors[2], config.S[2], interpolate=True)
+            l_dense = loss_fn(out[2], y2, depth_target, scaled_anchors[2], config.S[2])
         print(l_dense)
