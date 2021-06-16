@@ -235,7 +235,7 @@ class YOLODataset(Dataset):
 
         dist = cv.distanceTransform(depth_target_bw_inv,cv.DIST_L2,cv.DIST_MASK_3)
 
-        dense_depth_target[np.where(dist>config.DIST_THRESHOLD)] = 0
+        dense_depth_target[np.where(dist>config.DIST_TRAFO_THRESHOLD)] = 0
         savePath=os.path.join(self.depth_labels_dir,'griddata_nearest_wo_sky',self.annotations.iloc[index, 1])
         Image.fromarray(dense_depth_target).save(savePath)
         return 0

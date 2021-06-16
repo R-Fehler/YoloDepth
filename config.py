@@ -11,14 +11,16 @@ DS_NAME='Ostring'
     # Ostring
     # --------
 if DS_NAME=='Ostring':
-    # DATASET = 'DepthAndObjectDetection'
-    DATASET = 'ObjectDetection'
-    DATASET_TRAIN_CSV = 'OstringDepthDataset/OstringDataSetTrainingAndVal.csv'
+    DATASET = 'DepthAndObjectDetection'
+    # DATASET = 'ObjectDetection'
+    DATASET_TRAIN_CSV = 'OstringDepthDataset/OstringDataSetTrainingAndVal_Mapping.csv'
+    # DATASET_TRAIN_CSV = 'OstringDepthDataset/OstringDataSetTrainingAndVal_Mapping.csv'
     DATASET_VAL_CSV = 'OstringDepthDataset/OstringDataSetValidation.csv'
-    DATASET_TEST_CSV = 'OstringDepthDataset/OstringDataSetTest.csv'
+    DATASET_TEST_CSV = 'OstringDepthDataset/OstringDataSetTest_MappingNOTGT.csv'
+    # DATASET_TEST_CSV = 'OstringDepthDataset/OstringDataSetTrainingAndVal_Mapping.csv'
     IMAGE_DIR = 'OstringDepthDataset/imgs/'
     BBOX_LABEL_DIR = "OstringDepthDataset/bbox_labels/"
-    DEPTH_NN_MAP_LABEL = "OstringDepthDataset/depth_labels/griddata_nearest/"
+    DEPTH_NN_MAP_LABEL = "OstringDepthDataset/depth_labels/griddata_nearest_wo_sky/"
     NUM_CLASSES = 80
 
 
@@ -31,7 +33,7 @@ if DS_NAME=='OstringOverfit':
     DATASET_TEST_CSV = 'OstringDepthDataset/OstringDataSet_1_example.csv'
     IMAGE_DIR = 'OstringDepthDataset/imgs/'
     BBOX_LABEL_DIR = "OstringDepthDataset/bbox_labels/"
-    DEPTH_NN_MAP_LABEL = "OstringDepthDataset/depth_labels/griddata_nearest/"
+    DEPTH_NN_MAP_LABEL = "OstringDepthDataset/depth_labels/griddata_nearest_wo_sky/"
     NUM_CLASSES = 80
 
 # Mapillary Vistas
@@ -60,24 +62,31 @@ CONF_THRESHOLD = 0.1
 MAP_IOU_THRESH = 0.5
 NMS_IOU_THRESH = 0.45
 IMAGE_SIZE = 416
+DIST_TRAFO_THRESHOLD = IMAGE_SIZE//16
 S = [IMAGE_SIZE // 32, IMAGE_SIZE // 16, IMAGE_SIZE // 8]
 DEPTH_MASK_THRESHOLD = 1.0
+USE_2D_DEPTH_MAP = True
 PIN_MEMORY = True
 LOAD_MODEL = True
 TRANSFER_MODEL = False # because we dont change detection heads
 SAVE_MODEL = True
-LOAD_CHECKPOINT_FILE = "yolov3_pascal_78.1map_saved_correct_cls_labels_correct_anchors_Ostring_Detection_Only.pth.tar"
-SAVE_CHECKPOINT_FILE = "yolov3_pascal_78.1map_saved_correct_cls_labels_correct_anchors_Ostring_Detection_max_obj_test.pth.tar"
+LOAD_CHECKPOINT_FILE = "yolov3_pascal_78.1map_saved_correct_cls_labels_correct_anchors_Ostring_OBJ_Depth_LogTest.pth.tar"
+# LOAD_CHECKPOINT_FILE = "backup_yolov3_pascal_78.1map_saved_correct_cls_labels_correct_anchors_Ostring_Detection_Only.pth.tar"
+SAVE_CHECKPOINT_FILE = "yolov3_pascal_78.1map_saved_correct_cls_labels_correct_anchors_Ostring_OBJ_Depth_LogTest_noObj_noSky.pth.tar"
 IMG_DIR = DATASET + "/images/"
 LABEL_DIR = DATASET + "/labels/"
-TRAINING_EXAMPLES_PLOT_DIR = 'imgs_Ostring_testing_max_obj_no_depth'
+TRAINING_EXAMPLES_PLOT_DIR = 'runs/Ostring_Obj_Depth_noOBJ_Loss_noSky'
+# TRAINING_EXAMPLES_PLOT_DIR = 'imgs_Ostring_OBJ_Depth_LowLR_noOBJ_DepthLoss2'
 TRAINING_EXAMPLES_PLOT_DIR_DEPTH = TRAINING_EXAMPLES_PLOT_DIR +'/depthPred'
+LOG_DIR = TRAINING_EXAMPLES_PLOT_DIR+'/0_tb_log'
+RATIO_DATASETS=0.1
+
 # ANCHORS = [
 #     [(0.28, 0.22), (0.38, 0.48), (0.9, 0.78)],
 #     [(0.07, 0.15), (0.15, 0.11), (0.14, 0.29)],
 #     [(0.02, 0.03), (0.04, 0.07), (0.08, 0.06)],
 # ]  # Note these have been rescaled to be between [0, 1]
-
+# Depth Anchors
 ANCHORS = [
     [(0.04375, 0.03984375), (0.0296875, 0.13203125), (0.153125, 0.1203125)],
     [(0.009375, 0.01953125), (0.021875, 0.01640625), (0.0109375, 0.06328125)],
