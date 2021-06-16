@@ -273,7 +273,7 @@ def mean_average_precision(
             # if IOU is lower then the detection is a false positive
             else:
                 FP[detection_idx] = 1
-
+            #TODO class wise Depth TP/FP mean and variance of error
         TP_cumsum = torch.cumsum(TP, dim=0)
         FP_cumsum = torch.cumsum(FP, dim=0)
         recalls = TP_cumsum / (total_true_bboxes + epsilon)
@@ -302,6 +302,9 @@ def plot_image(image, pred_boxes,filename='default.jpg',figure=None,target_boxes
     im = np.array(image)
     height, width, _ = im.shape
 
+    plt.rc('font',size=2) 
+    plt.rc('axes',titlesize=6) 
+
     # Create figure and axes
     if figure != None:
         fig = figure
@@ -310,8 +313,6 @@ def plot_image(image, pred_boxes,filename='default.jpg',figure=None,target_boxes
     ax1 = fig.add_subplot(2,2,1)
     imgplot = ax1.imshow(im)
     ax1.set_title('Prediction')
-
-    plt.rc('font', size=6) 
 
     # box[0] is x midpoint, box[2] is width
     # box[1] is y midpoint, box[3] is height
@@ -333,15 +334,15 @@ def plot_image(image, pred_boxes,filename='default.jpg',figure=None,target_boxes
         )
         # Add the patch to the Axes
         ax1.add_patch(rect)
-        # ax.text(
-        #     upper_left_x * width,
-        #     upper_left_y * height,
-        #     s="c:" + str(int(class_pred)) + f"d:{box[4]:.1f}" ,
-        #     # s=f"d:{box[4]:.1f}",
-        #     color="white",
-        #     verticalalignment="top",
-        #     bbox={"color": colors[int(class_pred)], "pad": 0},
-        # )
+        ax1.text(
+            upper_left_x * width,
+            upper_left_y * height,
+            s="c:" + str(int(class_pred)) + f"d:{box[4]:.1f}" ,
+            # s=f"d:{box[4]:.1f}",
+            color="white",
+            verticalalignment="top",
+            bbox={"color": colors[int(class_pred)], "pad": 0},
+        )
     
     ax2 = fig.add_subplot(2,2,2)
     ax2.set_title('Target')
@@ -366,15 +367,16 @@ def plot_image(image, pred_boxes,filename='default.jpg',figure=None,target_boxes
         )
         # Add the patch to the Axes
         ax2.add_patch(rect)
-        # ax.text(
-        #     upper_left_x * width,
-        #     upper_left_y * height,
-        #     s="c:" + str(int(class_pred)) + f"d:{box[4]:.1f}" ,
-        #     # s=f"d:{box[4]:.1f}",
-        #     color="white",
-        #     verticalalignment="top",
-        #     bbox={"color": colors[int(class_pred)], "pad": 0},
-        # )
+        ax2.text(
+            upper_left_x * width,
+            upper_left_y * height,
+            s="c" + str(int(class_pred)) + f" d{box[4]:.1f}" ,
+            # s=f"d:{box[4]:.1f}",
+            color="white",
+            verticalalignment="top",
+            bbox={"color": colors[int(class_pred)], "pad": 0},
+
+        )
     if figure==None:
         plt.savefig(filename,dpi=250)
 
@@ -624,11 +626,14 @@ def check_class_accuracy(model, loader, threshold):
             tot_obj += torch.sum(obj)
             correct_noobj += torch.sum(obj_preds[noobj] == y[i][..., 0][noobj])
             tot_noobj += torch.sum(noobj)
-
-    print(f"Class accuracy is: {(correct_class/(tot_class_preds+1e-16))*100:2f}%")
-    print(f"No obj accuracy is: {(correct_noobj/(tot_noobj+1e-16))*100:2f}%")
-    print(f"Obj accuracy is: {(correct_obj/(tot_obj+1e-16))*100:2f}%")
+    clsAccuracy = (correct_class/(tot_class_preds+1e-16))*100
+    noobjAccuracy =(correct_noobj/(tot_noobj+1e-16))*100
+    objAccuracy = (correct_obj/(tot_obj+1e-16))*100
+    print(f"Class accuracy is: {clsAccuracy:2f}%")
+    print(f"No obj accuracy is: {noobjAccuracy:2f}%")
+    print(f"Obj accuracy is: {objAccuracy:2f}%")
     model.train()
+    return clsAccuracy,noobjAccuracy,objAccuracy
 
 
 def get_mean_std(loader):
@@ -675,6 +680,7 @@ def load_checkpoint_transfer(checkpoint_file, model, optimizer, lr):
     # model_dict = model.state_dict()
     pretrained_dict_state = pretrained_dict["state_dict"]
     # # 1. filter out unnecessary keys
+    # TODO filter only the absolutely last layer! 
     pretrained_dict_state = {k: v for k, v in pretrained_dict_state.items() if 'layers.15.pred' in k}
     pretrained_dict_state = {k: v for k, v in pretrained_dict_state.items() if 'layers.22.pred' in k}
     pretrained_dict_state = {k: v for k, v in pretrained_dict_state.items() if 'layers.29.pred' in k}
@@ -747,7 +753,6 @@ def get_loaders(train_csv_path, test_csv_path):
     return train_loader, test_loader, train_eval_loader
 
 def plot_couple_examples(model, loader, conf_threshold, iou_threshold, anchors,noOfExamples,epochNo=0):
-    Path(config.TRAINING_EXAMPLES_PLOT_DIR_DEPTH).mkdir(parents=True,exist_ok=True)
     model.eval()
     x, labels, depth_target = next(iter(loader))
     x = x.to(config.DEVICE,dtype=torch.float)
