@@ -5,6 +5,50 @@ import pandas as pd
 import glob
 import tqdm
 
+obj_threshold=0.8
+
+
+seamseg_to_mvd_classlabels = {
+    0: 0,
+    1: 1,
+    8: 2,
+    19: 3,
+    20: 4,
+    21: 5,
+    22: 6,
+    23: 7,
+    32: 8,
+    33: 9,
+    34: 10,
+    35: 11,
+    36: 12,
+    37: 13,
+    38: 14,
+    39: 15,
+    40: 16,
+    41: 17,
+    42: 18,
+    44: 19,
+    45: 20,
+    46: 21,
+    47: 22,
+    48: 23,
+    49: 24,
+    50: 25,
+    51: 26,
+    52: 27,
+    53: 28,
+    54: 29,
+    55: 30,
+    56: 31,
+    57: 32,
+    58: 33,
+    59: 33,
+    60: 34,
+    61: 35,
+    62: 36
+}
+
 def main(dir):
     w=4096.0
     h=1536.0
@@ -14,9 +58,11 @@ def main(dir):
             yaml_data=yaml.load(file,Loader=yaml.FullLoader)
         bboxes=[]
         class_id=[]
-        for label in yaml_data:
-            bboxes.append(label['bbox'])
-            class_id.append(label['class'])
+        objectness=[]
+        for detection in yaml_data:
+            bboxes.append(detection['bbox'])
+            class_id.append(detection['class'])
+            objectness.append(detection['objectness'])
 
         
         np_box = np.array(bboxes, dtype=np.float64)
@@ -26,8 +72,13 @@ def main(dir):
         for index,id in enumerate(class_id):
             # box=' '.join(map(str,np_box[index]))
             # print(f'{class_id[index]} '+box)
-            with open( fn + '.txt', 'a') as file:
-                file.write('%g %.6f %.6f %.6f %.6f\n' % (class_id[index], *np_box[index]))
+            if objectness[index]>obj_threshold:
+                try:
+                    with open( fn + '.txt', 'a') as file:
+                        file.write('%g %.6f %.6f %.6f %.6f\n' % (seamseg_to_mvd_classlabels[class_id[index]], *np_box[index]))
+                except KeyError:
+                    pass
+            
 def xyxy2xywh(x):
     # Convert nx4 boxes from [x1, y1, x2, y2] to [x, y, w, h] where xy1=top-left, xy2=bottom-right
     y = np.copy(x)
