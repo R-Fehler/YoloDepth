@@ -10,3 +10,9 @@ __py*
 *Dataset*
 events.out*
 *.png
+*srcCode*
+*backup*
+*pth
+*png
+*jpeg
+*jpg

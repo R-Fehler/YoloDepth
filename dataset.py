@@ -4,6 +4,7 @@ Creates a Pytorch dataset to load the Pascal VOC & MS COCO datasets
 
 from itertools import repeat
 from albumentations import augmentations
+from albumentations.augmentations import utils
 from numpy.core.fromnumeric import ndim
 from numpy.lib.type_check import _imag_dispatcher
 from torch._C import dtype
@@ -17,6 +18,9 @@ import matplotlib.pyplot as plt
 import scipy.ndimage
 from scipy.interpolate import griddata
 from threading import Thread
+
+import torchvision.ops
+
 
 from multiprocessing.pool import ThreadPool
 
@@ -44,13 +48,13 @@ class YOLODataset(Dataset):
         csv_file,
         img_dir,
         label_dir,
-        depth_labels_dir,
+        depth_labels_dir, # set depth labels dir == None if there are no lidar projections maps(preprocessed with Griddata NN Interpolation) getitem will return 0 for instead of 2D Depth Map img
         anchors,
-        image_size=416,
+        image_size=config.IMAGE_SIZE,
         S=[13, 26, 52],
         C=20,
         transform=None,
-        cache_images=False,
+        bboxLabelColumnIndex=2
     ):
         self.annotations = pd.read_csv(csv_file)
         self.annotations_depth = pd.read_csv(csv_file,delimiter=',')
@@ -64,7 +68,8 @@ class YOLODataset(Dataset):
         self.num_anchors = self.anchors.shape[0]
         self.num_anchors_per_scale = self.num_anchors // 3
         self.C = C
-        self.ignore_iou_thresh = 0.5
+        self.bboxLabelColumnIndex = bboxLabelColumnIndex
+        self.ignore_iou_thresh = config.TRAINING_IGNORE_IOU_TRESHOLD
         self.n = len(self.annotations)
         self.imgs = [None] * self.n
         self.targets = [None] * self.n
@@ -95,7 +100,8 @@ class YOLODataset(Dataset):
     def getLabels(self,index):
         label_path = os.path.join(self.label_dir, self.annotations.iloc[index, 2])
 
-        bboxes = np.loadtxt(fname=label_path,delimiter=' ',ndmin=2, usecols=(0,1,2,3,4,5))
+        bboxes = np.loadtxt(fname=label_path,delimiter=' ',ndmin=2, usecols=range(6))
+        return bboxes
 
     # target nicht tiefe ziel generieren.... nicht hier sondern im Loss
     # ausser bei mapping werten.
@@ -104,96 +110,130 @@ class YOLODataset(Dataset):
     def get_complete_targets(self, index):
         # image = np.array(Image.open(img_path).convert("RGB"))
         # Load both bbox labels and 2D Depth Maps
-        if(self.depth_labels_dir != None):
-            label_path = os.path.join(self.label_dir, self.annotations.iloc[index, 2])
+        # np.roll needed for albumentation augmentation format 
+        if(self.depth_labels_dir != None): # when there are and you want to load the 2d depth maps
+            label_path = os.path.join(self.label_dir, self.annotations.iloc[index, self.bboxLabelColumnIndex])
             bboxes = np.loadtxt(fname=label_path, delimiter=" ", ndmin=2)
-            if len(bboxes)==0:
-                bboxes=np.array([[0,0,0,0,0,0],])
-            
-            if bboxes.shape[1]>5:
-                bboxes = bboxes[:,0:6]
-                bboxes = np.roll(bboxes, 5, axis=1).tolist()
-            elif bboxes.shape[1]==5:
-                bboxes = np.roll(bboxes, 4, axis=1).tolist()
-            else: raise Exception(f'labelfile {label_path} misses entry, less than 5')
+            if len(bboxes)!=0: # for empty csv files
+                if bboxes.shape[1]>5: # when there are object specific depth labels from eg map or clustering
+                    bboxes = bboxes[:,0:6]
+                    bboxes = np.roll(bboxes, 5, axis=1)
+                elif bboxes.shape[1]==5: # when only detection labels are available
+                    bboxes = np.roll(bboxes, 4, axis=1)
+                else: raise Exception(f'labelfile {label_path} misses entry, less than 5')
 
             img_path = os.path.join(self.img_dir, self.annotations.iloc[index, 0])
             depth_label_path = os.path.join(self.depth_labels_dir, self.annotations.iloc[index, 1])
-            dense_depth_target = np.array(Image.open(depth_label_path).resize((416,416)),dtype=np.dtype('float'))/255.0
-        elif config.DS_NAME=='Mapillary':
-            label_path = os.path.join(self.label_dir, self.annotations.iloc[index, 1])
-            bboxes = np.roll(np.loadtxt(fname=label_path, delimiter=" ", ndmin=2), 4, axis=1).tolist()
+            # dense_depth_target = np.array(Image.open(depth_label_path).resize((config.IMAGE_SIZE,config.IMAGE_SIZE)),dtype=np.dtype('float'))/255.0 # C++ Mapping Tool outputs 16 bit grayscale value 2^16==255meter
+            # Resizing bring interpolation values for depth that are not valid and make the roi quantile depth estimation much worse for target generation. resize later
+            dense_depth_target = np.array(Image.open(depth_label_path),dtype=np.dtype('float'))/255.0 # C++ Mapping Tool outputs 16 bit grayscale value 2^16==255meter
+
+
+        else:                           # when you have 2d depth imgs in 2nd csv column but dont want to load it (because you set the depth_labels_dir = None)
+            label_path = os.path.join(self.label_dir, self.annotations.iloc[index, self.bboxLabelColumnIndex])
+            bboxes = np.loadtxt(fname=label_path, delimiter=" ", ndmin=2)
+            if len(bboxes)!=0: # for empty csv files
+                bboxes = np.roll((bboxes), 4, axis=1)
             img_path = os.path.join(self.img_dir, self.annotations.iloc[index, 0])
-            dense_depth_target = 0 
-        else:
-            label_path = os.path.join(self.label_dir, self.annotations.iloc[index, 2])
-            bboxes = np.roll(np.loadtxt(fname=label_path, delimiter=" ", ndmin=2), 4, axis=1).tolist()
-            img_path = os.path.join(self.img_dir, self.annotations.iloc[index, 0])
-            dense_depth_target = 0 
+            dense_depth_target = np.zeros((config.IMAGE_SIZE,config.IMAGE_SIZE),dtype=np.dtype('float'))
         # TODO check resizing and scaling. is native res possible?
         # dense depth prediction 
-        image = np.array(Image.open(img_path).convert("RGB").resize((416,416)),dtype=np.dtype('float'))/255.0
-        image = np.transpose(image,(2,0,1)) # channels first
+        image = np.array(Image.open(img_path).convert("RGB").resize((config.IMAGE_SIZE,config.IMAGE_SIZE)),dtype=np.dtype('float'))/255.0
+        # image = np.transpose(image,(2,1,0)) # channels first
+        # image =np.transpose(image,(1,0,2))
 
+        # width and heigt need to be greater than threshold
+        bboxes = bboxes[bboxes[:,3] > config.LABEL_WIDTH_THRESHOLD]
+        bboxes = bboxes[bboxes[:,4] > config.LABEL_HEIGHT_THRESHOLD]
+        bboxes = torch.from_numpy(bboxes)
+        # bboxes = [box for box in bboxes if bboxes[3]>config.LABEL_WIDTH_THRESHOLD]
+        # bboxes = [box for box in bboxes if bboxes[4]>config.LABEL_HEIGHT_THRESHOLD]
 
-        # valid_depth_pixels = depth_target > 0
-        # # outputs two vectors (x y) of length n
-        # valid_depth_pixels_indices = np.where(valid_depth_pixels == True)
-        # # this does output a 1d vector of length n
-        # valid_depth_pixels_values = depth_target[valid_depth_pixels_indices]
-        # # this might be error
-        # grid_x, grid_y = np.mgrid[0:1536, 0:4096]
-        # or this might be wrong: 2 xy vector for indices might need to be transposed or something
-        # dense_depth_target = griddata(valid_depth_pixels_indices,valid_depth_pixels_values,(grid_x,grid_y),method='nearest')
-        # dense_depth_target_lin = griddata(valid_depth_pixels_indices,valid_depth_pixels_values,(grid_x,grid_y),method='linear')
-        # dense_depth_target_cub = griddata(valid_depth_pixels_indices,valid_depth_pixels_values,(grid_x,grid_y),method='cubic')
-        # im = Image.fromarray(dense...)
-        # im.save(fp) 
-
-        if self.transform:
-            augmentations = self.transform(image=image, bboxes=bboxes)
+        # TODO augment the obj detection dataset. 
+        if self.transform: # Transformation does not return any bboxes for some reason.
+            bboxes[:,:4] = torchvision.ops.box_convert(bboxes[:,:4],'cxcywh','xyxy')
+            bboxes[:,:4] = bboxes[:,:4].clamp(0,1)
+            bboxes = bboxes.tolist()
+            augmentations = self.transform(image=image, depth_target=dense_depth_target, bboxes=bboxes)
             image = augmentations["image"]
-            bboxes = augmentations["bboxes"]
+            dense_depth_target = augmentations["depth_target"]
+            bboxes_augm = augmentations["bboxes"]
+            bboxes_augm = torch.tensor(bboxes_augm)
+            if bboxes_augm.shape[0]!=0:
+                bboxes_augm[:,:4] = torchvision.ops.box_convert(bboxes_augm[:,:4],'xyxy','cxcywh')
+
+            bboxes = bboxes_augm.tolist()
+        else:
+            bboxes = bboxes.tolist()
+
+        # TODO analyze the axis of all input data and their transformations in the model to the output and the loss function. make it less hacky with all the permutations and transpositionss
+        image =np.transpose(image,(2,0,1))
+
 
         # Below assumes 3 scale predictions (as paper) and same num of anchors per scale
         targets = [torch.zeros((self.num_anchors // 3, S, S, 7)) for S in self.S]
-        for box in bboxes:
+        for box in bboxes: # bboxes of len(0) will be skipped returns target full of zeros
             iou_anchors = iou(torch.tensor(box[2:4]), self.anchors)
+            # anchor indices can look like: 9,2,4,3,5,6,1,7 . with Anchor 9 having the highest IoU and 7 the lowest  
             anchor_indices = iou_anchors.argsort(descending=True, dim=0) # sort anchors by IoU with Target Bbox
             if len(box)==5:
-                x, y, width, height, class_label = box
+                box_x, box_y, box_width, box_height, class_label = box
             elif len(box)==6:
-                x, y, width, height, depth, class_label = box
-            x=clamp(x,0,0.999999999)
-            y=clamp(y,0,0.999999999)
-            width=clamp(width,0,0.999999999)
-            height=clamp(height,0,0.999999999)
-            
+                box_x, box_y, box_width, box_height, depth, class_label = box
+                depth=clamp(depth,1,255)
+            box_x=clamp(box_x,0,0.999999999)
+            box_y=clamp(box_y,0,0.999999999)
+            box_width=clamp(box_width,0,0.999999999)
+            box_height=clamp(box_height,0,0.999999999)
 
-            has_anchor = [False] * 3  # each scale should have one anchor
+
+            has_anchor = [False] * 3  # each scale should have one anchor for the same gt bbox label 
             for anchor_idx in anchor_indices:
                 scale_idx = anchor_idx // self.num_anchors_per_scale
                 anchor_on_scale = anchor_idx % self.num_anchors_per_scale
                 S = self.S[scale_idx]
-                i, j = int(S * y), int(S * x)  # which cell
-                anchor_taken = targets[scale_idx][anchor_on_scale, i, j, 0] # eg [1,2,3,0] check if previously anchor was taken
-                if not anchor_taken and not has_anchor[scale_idx]:
-                    targets[scale_idx][anchor_on_scale, i, j, 0] = 1
-                    x_cell, y_cell = S * x - j, S * y - i  # both between [0,1] scaled to cell coords
+                i, j = int(S * box_y), int(S * box_x)  # which cell
+                # targets is a list! of targets at 3 scales [S1,S2,S3] with ScaleTarget S1 of shape eg [3,13,13,7] [numAnchorsAtScale,S,S,[obj,x,y,w,h,z,cls]]
+                # we only have 3 anchor boxes per scale. when more than 3 objects fall into that grid cell they will not be included in the target.
+                anchor_taken = targets[scale_idx][anchor_on_scale, i, j, 0] # eg [1,2,3,0] check if previously anchor was taken by other object bbox. 
+                # each anchor on scale is target for only one gt object bbox. so if two objects centers of same shape fall into same grid cell they can take the anchor box of the other away
+                # then the next best anchor is chosen as a target
+                if not anchor_taken and not has_anchor[scale_idx]: # when the scale at index idx already has a target anchor for this bbox it will be skipped.
+                    targets[scale_idx][anchor_on_scale, i, j, 0] = 1 # confidence target == 1 
+                    x_cell, y_cell = S * box_x - j, S * box_y - i  # both between [0,1] scaled to cell coords
                     width_cell, height_cell = (
-                        width * S,
-                        height * S,
+                        box_width * S,
+                        box_height * S,
                     )  # can be greater than 1 since it's relative to cell
                     box_coordinates = torch.tensor(
                         [x_cell, y_cell, width_cell, height_cell]
                     )
                     # TODO this value is only viable when there is a mapped object
                     # Mapping output in den label txt files das mit rausschreibt
-                    if (len(box)==6 and depth>0):
+                    if (len(box)==6):
                         z = depth
                     # config einstellbar machen ob ich parameter target oder depthmap nehme
+                    elif config.GENERATE_PSEUDO_DEPTH_TARGETS:
+                        x1,x2 = box_x - box_width/2, box_x + box_width/2
+                        y1,y2 = box_y - box_height/2 ,box_y + box_height/2
+                        x1=clamp(x1,0,0.99999)
+                        x2=clamp(x2,0,0.99999)
+                        y1=clamp(y1,0,0.99999)
+                        y2=clamp(y2,0,0.99999)
+                        x1 =int(x1*config.ORIGINAL_IMAGE_WIDTH)
+                        x2 =int(x2*config.ORIGINAL_IMAGE_WIDTH)
+                        y1 =int(y1*config.ORIGINAL_IMAGE_HEIGHT)
+                        y2 =int(y2*config.ORIGINAL_IMAGE_HEIGHT)
+                        # TODO Why is the Depth Image Coordinate System transposed compared to the labels? is it an exif metadata problem again?
+                        roi=dense_depth_target[y1:y2,x1:x2]
+                        roi=roi[roi>1] # fiter values that are invalid depth aka == 0
+                        if len(roi)>0:
+                            z = np.quantile(roi,config.QUANTILE_DEPTH_CLUSTER,interpolation='nearest') # when there is no valid depth value aka 0 in the dense depth target location it will be ignored in loss eval
+                        else:
+                            z = 0
                     else:
                         z = 0
+
                     targets[scale_idx][anchor_on_scale, i, j, 1:5] = box_coordinates
                     targets[scale_idx][anchor_on_scale, i, j, 5] = z
                     targets[scale_idx][anchor_on_scale, i, j, 6] = int(class_label)
@@ -201,15 +241,16 @@ class YOLODataset(Dataset):
 
                 elif not anchor_taken and iou_anchors[anchor_idx] > self.ignore_iou_thresh:
                     targets[scale_idx][anchor_on_scale, i, j, 0] = -1  # ignore prediction
-        
-        return image, tuple(targets), dense_depth_target
+        img_filename=self.annotations.iloc[index, 0]
+        dense_depth_target = cv.resize(dense_depth_target,dsize=(config.IMAGE_SIZE,config.IMAGE_SIZE),interpolation=cv.INTER_LINEAR) # only for visualization, must not be done before calculating object depth target
+        return torch.from_numpy(image), tuple(targets), torch.from_numpy(dense_depth_target), img_filename
     
 
 
 
     def prepare_griddata_depth_maps(self, index):
         '''
-        this function saves the dense depth map images 
+        this function saves the dense depth map images as preprocessing step
         '''
         depth_label_path = os.path.join(self.depth_labels_dir, self.annotations.iloc[index, 1])
         depth_target = np.array(Image.open(depth_label_path))
@@ -219,7 +260,7 @@ class YOLODataset(Dataset):
         # this does output a 1d vector of length n
         valid_depth_pixels_values = depth_target[valid_depth_pixels_indices]
         # this might be error
-        grid_x, grid_y = np.mgrid[0:1536, 0:4096]
+        grid_x, grid_y = np.mgrid[0:config.ORIGINAL_IMAGE_HEIGHT, 0:config.ORIGINAL_IMAGE_WIDTH]
         # or this might be wrong: 2 xy vector for indices might need to be transposed or something
         dense_depth_target = griddata(valid_depth_pixels_indices,valid_depth_pixels_values,(grid_x,grid_y),method='nearest')
         # dense_depth_target = dense_depth_target.astype(np.dtype('int32'))
@@ -240,6 +281,16 @@ class YOLODataset(Dataset):
         Image.fromarray(dense_depth_target).save(savePath)
         return 0
 
+# class DualDataset(Dataset):
+#     def __init__(self, objDetectionDataset: YOLODataset, objDetectionDepthDataset: YOLODataset):
+#         self.detectionDS = objDetectionDataset
+#         self.depthDS = objDetectionDepthDataset
+#     def __len__(self):
+#         return self.de
+#         pass
+#     def __getitem__(self,index):
+#         detection=
+#         pass
 
 
 def clamp(n, smallest, largest): return max(smallest, min(n, largest))

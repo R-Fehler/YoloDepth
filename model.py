@@ -17,11 +17,11 @@ List is structured by "B" indicating a residual block followed by the number of 
 """
 arch_config = [
     (32, 3, 1),
-    (64, 3, 2),
+    (64, 3, 2), # res imgsize/2 208 bzw 
     ["B", 1],
-    (128, 3, 2),
-    ["B", 2],
-    (256, 3, 2),
+    (128, 3, 2), # res imgsize/4 104
+    ["B", 2], 
+    (256, 3, 2), # res imgszize/8 52 bzw 128
     ["B", 8],
     (512, 3, 2),
     ["B", 8],
@@ -42,6 +42,34 @@ arch_config = [
     "S",
 ]
 
+# high res architecture but with low grid cell count: IMG SIZE 832px with S=[13,26,52]
+# arch_config = [
+#     (32, 3, 1),
+#     (64, 3, 2),
+#     (128, 3, 2), # res imgsize/2 208 bzw 
+#     ["B", 1],
+#     (256, 3, 2), # res imgsize/4 104
+#     ["B", 2], 
+#     (512, 3, 2), # res imgszize/8 52 bzw 128
+#     ["B", 8],
+#     (1024, 3, 2),
+#     ["B", 8],
+#     (2048, 3, 2),
+#     ["B", 4],  # To this point is Darknet-53
+#     (1024, 1, 1),
+#     (2048, 3, 1),
+#     "S",
+#     (512, 1, 1),
+#     "U",
+#     (512, 1, 1),
+#     (1024, 3, 1),
+#     "S",
+#     (256, 1, 1),
+#     "U",
+#     (256, 1, 1),
+#     (512, 3, 1),
+#     "S",
+# ]
 
 class CNNBlock(nn.Module):
     def __init__(self, in_channels, out_channels, bn_act=True, **kwargs):
@@ -99,6 +127,8 @@ class ScalePrediction(nn.Module):
     def forward(self, x):
         return (
             self.pred(x)
+                    # BS, num_anchors, numcls + x,y,w,h,obj,depth, S, S
+                    # previously x.shape[1] was 3*( numcls + x,y,w,h,obj,depth), now seperate for each scale
             .reshape(x.shape[0], 3, self.num_classes + 5 + self.depth_bins, x.shape[2], x.shape[3])
             .permute(0, 1, 3, 4, 2)
         )
@@ -109,14 +139,12 @@ class DepthPrediction(nn.Module):
         super().__init__()
         self.pred = nn.Sequential(
             CNNBlock(in_channels, 2*in_channels, kernel_size=3, padding=1),
-            CNNBlock(2 * in_channels, 1, bn_act=False, kernel_size=1),
+            CNNBlock(2 * in_channels, 2, bn_act=False, kernel_size=1),
         )
 
     def forward(self, x):
         return(
             self.pred(x)
-            .reshape(x.shape[0], 1, x.shape[2], x.shape[3])
-            .permute(0, 2, 3, 1)
 
         )
 

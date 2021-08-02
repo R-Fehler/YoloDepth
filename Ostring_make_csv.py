@@ -25,7 +25,7 @@ def checkAndFilterFilesWithSameNameExistInOtherDir(list, OtherDir, extension):
 
 
 def main():
-    depth_dir = "../DepthMapsOstringTest/map/"
+    depth_dir = "./OstringDepthDataset/depth_labels/"
     img_dir = "./OstringDepthDataset/imgs/"
     label_dir = "./OstringDepthDataset/bbox_labels/"
     depth_list = getListofFileBaseNameInDir(depth_dir)
@@ -36,7 +36,7 @@ def main():
 
     csv = pd.DataFrame(list(zip([i+'.png' for i in union_of_lists], [i+'.png' for i in union_of_lists], [
                        i+'.txt' for i in union_of_lists])), columns=['img', 'depthlabel', 'bbox labels'])
-    csv.to_csv("OstringDataSet_union.csv", index=False)
+    csv.to_csv("OstringDataSet_union_MappingLabels.csv", index=False)
 
 
 if __name__ == '__main__':
